@@ -1,4 +1,5 @@
 import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +9,7 @@ import { config } from './config.js';
 import { getLog, logger } from './log.js';
 import { MeetTunes } from './bot.js';
 import { platformList, detectPlatform } from './meeting/platforms/index.js';
+import { assertSafeUrl } from './audio/netguard.js';
 import { mockMeetingRouter } from './dev/mockMeeting.js';
 
 const log = getLog('server');
@@ -27,6 +29,35 @@ function authorized(req) {
   return safeEqual(pass, config.uiPassword);
 }
 
+/** Brute-force guard for the UI password: 10 failures per 5 minutes per address. */
+const failures = new Map();
+function authBlocked(req) {
+  const ip = req.socket.remoteAddress || '?';
+  const f = failures.get(ip);
+  return !!f && f.until > Date.now() && f.count >= 10;
+}
+function authFailed(req) {
+  const ip = req.socket.remoteAddress || '?';
+  const now = Date.now();
+  const f = failures.get(ip);
+  if (!f || f.until < now) failures.set(ip, { count: 1, until: now + 5 * 60 * 1000 });
+  else f.count++;
+  if (failures.size > 1000) for (const [k, v] of failures) if (v.until < now) failures.delete(k);
+}
+
+/**
+ * DNS-rebinding guard. Without a password, a web page on the internet could resolve its own hostname to
+ * 127.0.0.1 and drive the bot from the victim's browser; only accept localhost / IP literals / ALLOWED_HOSTS.
+ * (With a password the attacker's origin has no credentials, so any Host is fine - e.g. behind a reverse proxy.)
+ */
+function hostAllowed(req) {
+  if (config.uiPassword) return true;
+  const host = (req.headers.host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '').toLowerCase();
+  return host === 'localhost' || net.isIP(host) > 0 || config.allowedHosts.includes(host);
+}
+
+const CSP = "default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+
 /** Same-origin check: stops other web pages from driving a bot that lives on localhost. */
 function sameOrigin(req) {
   const origin = req.headers.origin;
@@ -45,7 +76,21 @@ export async function createServer({ bot, port = config.port, host = config.host
   const app = express();
   app.disable('x-powered-by');
   app.use((req, res, next) => {
+    res.set({
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+      'Cross-Origin-Resource-Policy': 'same-origin',
+      'Cache-Control': 'no-store',
+    });
+    if (!req.path.startsWith('/dev')) {
+      // /dev = test-only mock meeting (inline scripts, iframes). Everything else is locked down; Live view lets
+      // you click inside the bot's browser, so the UI must never be frameable (clickjacking).
+      res.set({ 'Content-Security-Policy': CSP, 'X-Frame-Options': 'DENY' });
+    }
+    if (!hostAllowed(req)) return res.status(403).send('Host not allowed (set ALLOWED_HOSTS or UI_PASSWORD)');
+    if (authBlocked(req)) return res.status(429).send('Too many failed attempts - try again later');
     if (!authorized(req)) {
+      if (req.headers.authorization) authFailed(req); // the browser's first, credential-less request is not an attack
       res.set('WWW-Authenticate', 'Basic realm="MeetTunes"');
       return res.status(401).send('Authentication required');
     }
@@ -58,6 +103,13 @@ export async function createServer({ bot, port = config.port, host = config.host
   const api = express.Router();
   const json = express.json({ limit: '64kb' });
   api.use((req, res, next) => (req.is('application/octet-stream') ? next() : json(req, res, next)));
+  api.use((req, res, next) => {
+    if (req.method !== 'GET' && !req.is('application/json') && !req.is('application/octet-stream') && req.headers['content-length'] > 0) {
+      return res.status(415).json({ error: 'Content-Type must be application/json' });
+    }
+    if (req.body === undefined || req.body === null || typeof req.body !== 'object') req.body = {};
+    next();
+  });
 
   const wrap = (fn) => async (req, res) => {
     try {
@@ -83,8 +135,9 @@ export async function createServer({ bot, port = config.port, host = config.host
     return { id: P2.id, label: P2.label, experimental: P2.experimental };
   }));
   api.post('/join', wrap(async (req) => {
-    if (!req.body.url) throw new Error('Paste a meeting link first');
-    detectPlatform(req.body.url); // validate early so the user gets an immediate error
+    if (typeof req.body.url !== 'string' || !req.body.url) throw new Error('Paste a meeting link first');
+    const plat = detectPlatform(req.body.url); // validate early so the user gets an immediate error
+    if (plat.id !== 'mock') await assertSafeUrl(req.body.url);
     if (bot.session.active) throw new Error('Already in (or joining) a meeting');
     await bot.join(req.body.url, req.body.displayName);
   }));
@@ -146,23 +199,37 @@ export async function createServer({ bot, port = config.port, host = config.host
 
   app.use('/api', api);
   app.use((req, res) => res.status(404).json({ error: 'Not found' }));
+  // eslint-disable-next-line no-unused-vars
+  app.use((err, req, res, next) => {
+    // bad JSON, oversized body, aborted upload...: a plain JSON error, never a stack trace
+    res.status(err.status && err.status < 500 ? err.status : 400).json({ error: err.type === 'entity.too.large' ? 'Request too large' : 'Bad request' });
+  });
 
   const server = http.createServer(app);
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 });
+  const MAX_CLIENTS = 20;
   const clients = new Set();
 
   server.on('upgrade', (req, socket, head) => {
-    if (req.url !== '/ws' || !authorized(req) || !sameOrigin(req)) {
+    if (req.url !== '/ws' || !hostAllowed(req) || authBlocked(req) || !authorized(req) || !sameOrigin(req)) {
+      if (req.headers.authorization && !authorized(req)) authFailed(req);
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       return socket.destroy();
     }
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
   });
 
-  const send = (ws, msg) => ws.readyState === 1 && ws.send(JSON.stringify(msg));
+  // A stalled client must not make us buffer megabytes of screenshots: drop frames for it, cut it off if it is hopeless.
+  const send = (ws, msg) => {
+    if (ws.readyState !== 1) return;
+    if (ws.bufferedAmount > 16 * 1024 * 1024) return ws.terminate();
+    if (msg.type === 'frame' && ws.bufferedAmount > 512 * 1024) return;
+    ws.send(JSON.stringify(msg));
+  };
   const broadcast = (msg) => clients.forEach((ws) => send(ws, msg));
 
   wss.on('connection', (ws) => {
+    if (clients.size >= MAX_CLIENTS) return ws.close(1013, 'too many clients');
     ws.live = false;
     clients.add(ws);
     send(ws, { type: 'hello', ...bot.snapshot(), platforms: platformList(), chat: bot.chatLog.slice(-100), log: logger.ring.slice(-60) });
@@ -187,7 +254,7 @@ export async function createServer({ bot, port = config.port, host = config.host
     }, 120);
   };
   bot.on('player', pushPlayer);
-  bot.on('session', (s) => broadcast({ type: 'session', session: s }));
+  bot.on('session', (s) => broadcast({ type: 'session', session: s, audio: bot.audio }));
   bot.on('chat', (entry) => broadcast({ type: 'chat', entry }));
   bot.on('settings', (settings) => broadcast({ type: 'settings', settings }));
   logger.on('entry', (entry) => broadcast({ type: 'log', entry }));

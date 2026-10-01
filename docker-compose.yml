@@ -21,6 +21,11 @@ services:
       - ./music:/music            # optional local library
     shm_size: "1gb"               # Chromium needs more than Docker's default 64MB /dev/shm
     security_opt:
-      - seccomp:unconfined        # Chromium's sandbox needs it unless you supply a custom seccomp profile
+      - no-new-privileges:true
+      - seccomp:unconfined        # only needed if you re-enable Chromium's own sandbox (CHROMIUM_NO_SANDBOX=false)
+    cap_drop: [ALL]               # nothing here needs Linux capabilities
+    pids_limit: 512
+    mem_limit: 2g
+    # ALLOWED_HOSTS: "bot.example.org"   # needed to reach the UI by hostname when UI_PASSWORD is not set
 volumes:
   meettunes-data:

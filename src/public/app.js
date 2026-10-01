@@ -58,6 +58,7 @@ function connect() {
         break;
       case 'session':
         S.session = m.session;
+        if (m.audio) S.audio = m.audio;
         renderSession();
         break;
       case 'settings':
@@ -81,6 +82,9 @@ const STATUS_TEXT = { idle: 'Not in a meeting', starting: 'Starting browser…',
 
 function renderSession() {
   const s = S.session; if (!s) return;
+  const aw = $('#audioWarn');
+  aw.hidden = !S.audio || S.audio.ok !== false;
+  aw.textContent = S.audio?.error ? 'Audio problem: ' + S.audio.error : '';
   const pill = $('#statusPill');
   pill.className = 'pill ' + s.state;
   $('#statusText').textContent = STATUS_TEXT[s.state] || s.state;

@@ -78,7 +78,11 @@ Keyboard: `Space` play/pause, `Shift+←/→` previous/next.
 | `SELECTORS_FILE` | | JSON overriding per-platform selectors |
 | `GUEST_EMAIL` | `meettunes@example.com` | Email typed into guest forms that demand one (Webex) |
 | `HEADLESS` | `false` | `true` = no Xvfb (less compatible) |
-| `ALLOW_PRIVATE_URLS` | `false` | Allow playing from LAN addresses |
+| `ALLOW_PRIVATE_URLS` | `false` | Allow meeting/music URLs on private / LAN addresses |
+| `ALLOWED_HOSTS` | | Extra `Host` names accepted when `UI_PASSWORD` is not set (localhost and IPs always work) |
+| `COMMANDS_PER_10S` / `COMMANDS_GLOBAL_PER_10S` | `8` / `20` | Chat command rate limits (per sender / everyone) |
+| `YTDLP_TIMEOUT_SEC` / `YTDLP_CONCURRENCY` | `45` / `3` | yt-dlp timeout and parallelism |
+| `MONITOR_INTERVAL_MS` | `4000` | How often the meeting state is checked |
 | `MUSIC_DIR`, `DATA_DIR` | `/music`, `/data` | Library / settings + browser profile |
 
 Persisted in `/data`: settings and the Chromium profile, so a Google/Slack sign-in made through Live view survives restarts.
@@ -88,12 +92,18 @@ Persisted in `/data`: settings and the Chromium profile, so a Google/Slack sign-
 ```bash
 npm install
 AUDIO_SINK=none HEADLESS=true ALLOW_MOCK_MEETING=1 npm start   # decodes audio but discards it
-npm test                                                       # unit tests (51)
-npm run test:e2e   # Linux only: needs pulseaudio, Xvfb, ffmpeg; run as non-root
+npm test                       # 86 unit / security / robustness tests
+npm run test:e2e               # 28 end-to-end tests (real meeting situations); Linux only: pulseaudio, Xvfb, ffmpeg; run as non-root
 ```
 
 `ALLOW_MOCK_MEETING=1` serves a fake meeting at `/dev/mock-meeting?room=x` - paste that URL to try everything
 without a real call. For real audio on Linux, run `docker/pulse-setup.sh` first and leave `AUDIO_SINK=pulse`.
+
+## Security
+
+Set `UI_PASSWORD`, keep the port on localhost or behind a TLS reverse proxy, and read
+[docs/SECURITY.md](docs/SECURITY.md): trust boundaries, the 16 issues found and fixed in the hardening pass, and
+the remaining limitations (e.g. chat display names are not authentication).
 
 ## Troubleshooting
 

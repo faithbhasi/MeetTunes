@@ -54,6 +54,10 @@ export class Platform {
   async isInMeeting(page) {
     return (await isVisible(page, this.sel.inMeeting)) && !(await isVisible(page, this.sel.lobby));
   }
+  /** Toolbar-only check (no text patterns): what the monitor trusts, because chat text can't fake a button. */
+  async inMeetingUi(page) {
+    return isVisible(page, this.sel.inMeeting);
+  }
   async isInLobby(page) {
     return isVisible(page, this.sel.lobby);
   }

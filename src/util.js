@@ -51,3 +51,18 @@ export function shuffleInPlace(arr) {
   }
   return arr;
 }
+
+/** Meeting links carry passcodes (pwd=, p=, MTID=, ...). Never put them in logs or broadcast status. */
+export function redactUrl(input) {
+  try {
+    const u = new URL(input);
+    for (const k of [...u.searchParams.keys()]) {
+      if (/^(pwd|passcode|password|pw|p|token|key|mtid|tk|jwt|otp|code|sig|signature|auth)$/i.test(k)) u.searchParams.set(k, '***');
+    }
+    u.username = '';
+    u.password = '';
+    return u.href;
+  } catch {
+    return '[invalid url]';
+  }
+}

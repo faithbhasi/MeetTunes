@@ -3,13 +3,15 @@ import fs from 'node:fs/promises';
 import { chromium } from 'playwright';
 import { config } from '../config.js';
 import { getLog } from '../log.js';
-import { sleep, truncate } from '../util.js';
+import { sleep, truncate, redactUrl } from '../util.js';
+import { assertSafeUrl } from '../audio/netguard.js';
 import { createPlatform } from './platforms/index.js';
 import { observerInitScript } from './chatObserver.js';
 import { framesOf, findVisible } from './helpers.js';
 
 const log = getLog('meeting');
 const VIEWPORT = { width: 1280, height: 800 };
+const MAX_CHAT_QUEUE = 20;
 
 /**
  * Meeting clients apply echo-cancellation / noise-suppression / AGC to the microphone, which turns music
@@ -40,8 +42,10 @@ export class MeetingSession extends EventEmitter {
   constructor({ getPrefix }) {
     super();
     this.getPrefix = getPrefix;
+    this.gen = 0; // bumped per join; callbacks from an older session are ignored
     this.reset();
     this.sendQueue = Promise.resolve();
+    this.queued = 0;
     this.recentSent = [];
   }
 
@@ -52,6 +56,8 @@ export class MeetingSession extends EventEmitter {
     this.abort = null;
     this.monitor = null;
     this.chatArmed = false;
+    this.joinedOnce = false;
+    this.closing = false;
     this.info = { state: 'idle', detail: '', platform: null, url: null, displayName: null, since: Date.now(), chatMode: null, error: null };
   }
 
@@ -63,7 +69,7 @@ export class MeetingSession extends EventEmitter {
   }
 
   _set(state, detail = '', extra = {}) {
-    this.info = { ...this.info, state, detail, since: Date.now(), ...extra };
+    this.info = { ...this.info, state, detail, since: Date.now(), error: state === 'error' ? detail : null, ...extra };
     log.info(`${state}${detail ? ': ' + detail : ''}`);
     this.emit('status', this.snapshot());
   }
@@ -75,12 +81,16 @@ export class MeetingSession extends EventEmitter {
   // ---- join -----------------------------------------------------------------------------------
   async join({ url, displayName }) {
     if (this.active) throw new Error('Already in (or joining) a meeting - leave first');
+    const platform = createPlatform(url);
+    if (platform.id !== 'mock') await assertSafeUrl(url); // no private / loopback / non-http meeting links
+    if (this.active) throw new Error('Already in (or joining) a meeting - leave first'); // re-check after the await
     this.reset();
-    this.platform = createPlatform(url);
+    const gen = ++this.gen;
+    this.platform = platform;
     this.abort = new AbortController();
-    this._set('starting', 'Launching browser...', { platform: this.platform.id, platformLabel: this.platform.label, url, displayName });
+    this._set('starting', 'Launching browser...', { platform: platform.id, platformLabel: platform.label, url: redactUrl(url), displayName });
     try {
-      await this._launch();
+      await this._launch(gen);
       const ctx = {
         page: this.page,
         url,
@@ -89,14 +99,17 @@ export class MeetingSession extends EventEmitter {
         timeoutMs: config.browser.joinTimeoutMs,
         signal: this.abort.signal,
         log,
-        setStatus: (s, d) => this._set(s, d),
+        setStatus: (s, d) => gen === this.gen && this._set(s, d),
       };
-      this._set('joining', `Opening ${this.platform.label}...`);
-      await this.platform.join(ctx);
+      this._set('joining', `Opening ${platform.label}...`);
+      await platform.join(ctx);
+      if (this.abort.signal.aborted) throw new Error('Cancelled');
       await this._armChat();
+      this.joinedOnce = true;
       this._set('joined', 'In the meeting', { chatMode: this.chatArmed ? 'armed' : 'unavailable' });
-      this._startMonitor();
+      this._startMonitor(gen);
     } catch (e) {
+      if (gen !== this.gen) throw e; // superseded; someone else owns the state now
       const cancelled = this.abort?.signal.aborted;
       const msg = cancelled ? 'Cancelled' : e.message;
       log.error(`join failed: ${msg}`);
@@ -110,7 +123,7 @@ export class MeetingSession extends EventEmitter {
     }
   }
 
-  async _launch() {
+  async _launch(gen) {
     await fs.mkdir(config.profileDir, { recursive: true });
     const env = { ...process.env };
     if (config.audio.sink === 'pulse') {
@@ -139,12 +152,15 @@ export class MeetingSession extends EventEmitter {
       ignoreDefaultArgs: ['--enable-automation'],
       acceptDownloads: false,
     });
-    this.context.on('close', () => {
-      if (this.active && !this.leaving) this._onBrowserGone();
+    const context = this.context;
+    context.on('close', () => {
+      // Only a close we did not cause, for the session that is still current, is a crash.
+      if (gen === this.gen && context === this.context && !this.closing && this.active) this._onBrowserGone();
     });
     await this.context.addInitScript(AUDIO_CONSTRAINT_PATCH);
     await this.context.addInitScript(observerInitScript(this.platform.chatSpec(this.getPrefix())));
     this.page = this.context.pages()[0] || (await this.context.newPage());
+    this.page.on('crash', () => gen === this.gen && !this.closing && this._cleanup('The browser tab crashed'));
     await this.page.exposeFunction('__mtChat', (json) => this._onChatMessage(json));
     // Auto-arm observers in frames created after we joined.
     this.page.on('framenavigated', (f) => this.chatArmed && f.evaluate(() => window.__mtArm?.()).catch(() => {}));
@@ -162,37 +178,58 @@ export class MeetingSession extends EventEmitter {
 
   _onBrowserGone() {
     log.warn('browser closed unexpectedly');
-    this._cleanup('Browser closed');
+    this._cleanup('The browser closed unexpectedly');
   }
 
-  _startMonitor() {
+  /**
+   * Watches the meeting. Decisions are based on the meeting *toolbar* (leave button), never on page text alone:
+   * anyone in the chat could type "the meeting has ended" or "waiting room" to make the bot leave.
+   */
+  _startMonitor(gen) {
     let missed = 0;
     this.monitor = setInterval(async () => {
-      if (this.state !== 'joined' || this.checking) return;
+      if (gen !== this.gen || !['joined', 'lobby'].includes(this.state) || this.checking) return;
       this.checking = true;
       try {
-        if (this.page.isClosed()) return this._cleanup('Browser page closed');
-        if (await this.platform.hasEnded(this.page)) return this._cleanup('The meeting ended (or the bot was removed)');
-        if (!(await this.platform.isInMeeting(this.page))) {
-          if (++missed >= 5) return this._cleanup('Lost the meeting UI (call ended?)');
-        } else missed = 0;
-        if (!(await this.platform.chatReady(this.page))) await this.platform.openChat(this.page);
-        await this.platform.ensureMicOn(this.page);
+        const page = this.page;
+        if (!page || page.isClosed()) return this._cleanup('The browser page closed');
+        if (await this.platform.inMeetingUi(page)) {
+          missed = 0;
+          if (this.state === 'lobby') this._set('joined', 'Back in the meeting');
+          if (!(await this.platform.chatReady(page))) await this._reopenChat();
+          await this.platform.ensureMicOn(page);
+        } else if (await this.platform.isInLobby(page)) {
+          missed = 0;
+          if (this.state !== 'lobby') this._set('lobby', 'Moved back to the lobby - waiting to be admitted again');
+        } else if (await this.platform.hasEnded(page)) {
+          return this._cleanup('The meeting ended (or the bot was removed)');
+        } else if (++missed >= 5) {
+          return this._cleanup('Lost the meeting UI (call ended?)');
+        }
       } catch (e) {
         log.debug?.(`monitor: ${e.message}`);
       } finally {
         this.checking = false;
       }
-    }, 4000);
+    }, config.browser.monitorMs);
+  }
+
+  /** Re-open the chat panel; whatever it shows afterwards is history, not new commands. */
+  async _reopenChat() {
+    if (!(await this.platform.openChat(this.page))) return false;
+    await sleep(900);
+    for (const f of framesOf(this.page)) await f.evaluate(() => window.__mtRebaseline?.()).catch(() => {});
+    return true;
   }
 
   async leave(reason = 'Left the meeting') {
-    if (this.state === 'idle') return;
-    if (this.abort && ['starting', 'joining', 'lobby'].includes(this.state)) {
+    if (this.state === 'idle' || this.closing) return;
+    if (this.abort && !this.joinedOnce && ['starting', 'joining', 'lobby'].includes(this.state)) {
+      // Still joining: cancel and tear the browser down so a stuck navigation can't delay it.
       this.abort.abort();
+      await this._closeBrowser();
       return;
     }
-    this.leaving = true;
     this._set('leaving', 'Leaving...');
     try {
       if (this.page && !this.page.isClosed()) await this.platform.leave(this.page);
@@ -202,13 +239,15 @@ export class MeetingSession extends EventEmitter {
     await this._cleanup(reason);
   }
 
+  /** Idempotent: browser close, monitor and a manual leave can all race to end the session. */
   async _cleanup(reason) {
+    if (this.closing) return;
+    this.closing = true;
     clearInterval(this.monitor);
     this.monitor = null;
-    await this._closeBrowser();
     const platform = this.info.platform;
+    await this._closeBrowser();
     this.reset();
-    this.leaving = false;
     this.emit('status', this.snapshot());
     this.emit('left', reason);
     log.info(`session ended: ${reason} (${platform})`);
@@ -245,19 +284,37 @@ export class MeetingSession extends EventEmitter {
       .map((l) => truncate(l, 400))
       // A reply line must never look like a command, or the generic observer could re-trigger on it.
       .map((l) => (l.trimStart().startsWith(prefix) ? `- ${l.trimStart()}` : l));
+    if (this.queued >= MAX_CHAT_QUEUE) return this.sendQueue; // chat is wedged or flooded; don't pile up
+    this.queued++;
     this.recentSent.push(...lines.map((l) => l.trim()));
     this.recentSent = this.recentSent.slice(-60);
     this.sendQueue = this.sendQueue
-      .then(() => this._sendNow(lines))
+      .then(() => this._sendWithRetry(lines))
       .catch((e) => log.warn(`could not send chat message: ${e.message}`))
-      .then(() => sleep(700));
+      .then(() => sleep(700))
+      .finally(() => this.queued--);
     return this.sendQueue;
+  }
+
+  /** The panel can close or re-render between "is it open?" and typing: retry a few times, re-opening each time. */
+  async _sendWithRetry(lines, attempts = 3) {
+    let last;
+    for (let i = 0; i < attempts; i++) {
+      try {
+        return await this._sendNow(lines);
+      } catch (e) {
+        last = e;
+        if (this.state !== 'joined') break;
+        await sleep(400);
+      }
+    }
+    throw last;
   }
 
   async _sendNow(lines) {
     if (this.state !== 'joined') throw new Error('not in a meeting');
     const page = this.page;
-    if (!(await this.platform.chatReady(page))) await this.platform.openChat(page);
+    if (!(await this.platform.chatReady(page))) await this._reopenChat();
     const input = await findVisible(page, this.platform.sel.chat.input);
     if (!input) throw new Error('chat input not found (see Live View / selectors override)');
     await input.click({ timeout: 3000 });
@@ -290,6 +347,7 @@ export class MeetingSession extends EventEmitter {
     if (!page || page.isClosed()) throw new Error('No browser is running');
     switch (action.type) {
       case 'click':
+        if (![action.x, action.y].every((v) => Number.isFinite(v) && v >= 0 && v <= 1)) throw new Error('bad coordinates');
         await page.mouse.click(action.x * VIEWPORT.width, action.y * VIEWPORT.height);
         break;
       case 'type':
@@ -300,11 +358,13 @@ export class MeetingSession extends EventEmitter {
         await page.keyboard.press(action.key);
         break;
       case 'scroll':
-        await page.mouse.wheel(0, Number(action.dy) || 0);
+        await page.mouse.wheel(0, Math.max(-2000, Math.min(2000, Number(action.dy) || 0)));
         break;
-      case 'goto':
-        await page.goto(action.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      case 'goto': {
+        const u = await assertSafeUrl(String(action.url || '')); // no file:, chrome:, or internal addresses
+        await page.goto(u.href, { waitUntil: 'domcontentloaded', timeout: 30000 });
         break;
+      }
       default:
         throw new Error('unknown action');
     }

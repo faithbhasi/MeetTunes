@@ -11,6 +11,27 @@ const STREAM_TTL_MS = 8 * 60 * 1000;
 
 export const newTrackId = () => crypto.randomUUID();
 
+/** Chat participants can trigger searches; cap how many yt-dlp processes run at once. */
+class Semaphore {
+  constructor(n) {
+    this.free = n;
+    this.waiters = [];
+  }
+  async run(fn) {
+    if (this.free > 0) this.free--;
+    else await new Promise((r) => this.waiters.push(r));
+    try {
+      return await fn();
+    } finally {
+      const next = this.waiters.shift();
+      if (next) next();
+      else this.free++;
+    }
+  }
+}
+const ytSem = new Semaphore(config.media.ytdlpConcurrency);
+const ytdlp = (args) => ytSem.run(() => run(config.media.ytdlp, args, { timeoutMs: config.media.ytdlpTimeoutMs }));
+
 /** Run a command, collect stdout, enforce timeout + output cap. No shell involved. */
 export function run(cmd, args, { timeoutMs = 45000, maxBytes = 25 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
@@ -91,7 +112,7 @@ export class Resolver {
       query = m[2];
     }
     const prefix = provider === 'soundcloud' ? 'scsearch' : 'ytsearch';
-    const out = await run(config.media.ytdlp, [
+    const out = await ytdlp([
       ...ytdlpBase(),
       '--flat-playlist',
       '-J',
@@ -121,7 +142,7 @@ export class Resolver {
         },
       ];
     }
-    const out = await run(config.media.ytdlp, [
+    const out = await ytdlp([
       ...ytdlpBase(),
       '--flat-playlist',
       '--playlist-end',
@@ -166,7 +187,7 @@ export class Resolver {
     if (track._stream && Date.now() - track._stream.at < STREAM_TTL_MS) return track._stream;
     const u = await assertSafeUrl(track.source);
     log.info(`resolving stream for "${track.title}"`);
-    const out = await run(config.media.ytdlp, [...ytdlpBase(), '--no-playlist', '-f', 'bestaudio/best', '-J', '--', u.href]);
+    const out = await ytdlp([...ytdlpBase(), '--no-playlist', '-f', 'bestaudio/best', '-J', '--', u.href]);
     const info = JSON.parse(out);
     const stream = this._streamFromInfo(info);
     if (!stream) throw new Error('No playable audio stream found');
