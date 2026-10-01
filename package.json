@@ -1,0 +1,20 @@
+{
+  "name": "meettunes",
+  "version": "0.1.0",
+  "description": "A Discord-style music bot that joins Zoom / Teams / Google Meet / Webex / Slack meetings, controlled from a web UI and from meeting chat.",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test \"test/unit/*.test.js\"",
+    "test:e2e": "node --test --test-concurrency=1 test/e2e/meeting.test.js"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "express": "^4.21.2",
+    "playwright": "1.56.1",
+    "ws": "^8.18.0"
+  },
+  "license": "MIT"
+}

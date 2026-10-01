@@ -1,0 +1,26 @@
+services:
+  meettunes:
+    build: .
+    image: meettunes:latest
+    container_name: meettunes
+    restart: unless-stopped
+    ports:
+      # Bound to localhost by default. Put a reverse proxy with TLS in front before exposing it.
+      - "127.0.0.1:3000:3000"
+    environment:
+      UI_PASSWORD: "${UI_PASSWORD:-}"      # strongly recommended if the port is reachable by others
+      BOT_NAME: "${BOT_NAME:-MeetTunes}"
+      COMMAND_PREFIX: "${COMMAND_PREFIX:-#}"
+      DEFAULT_VOLUME: "50"
+      SEARCH_PROVIDER: "${SEARCH_PROVIDER:-youtube}"   # youtube | soundcloud
+      # YTDLP_COOKIES: /data/cookies.txt   # helps when YouTube blocks datacenter IPs
+      # COMMAND_ALLOWLIST: "Alice,Bob"     # only these display names may use chat commands
+      # AUTO_LEAVE_IDLE_MIN: "30"
+    volumes:
+      - meettunes-data:/data      # settings + persistent browser profile (stay signed in to Google/Slack)
+      - ./music:/music            # optional local library
+    shm_size: "1gb"               # Chromium needs more than Docker's default 64MB /dev/shm
+    security_opt:
+      - seccomp:unconfined        # Chromium's sandbox needs it unless you supply a custom seccomp profile
+volumes:
+  meettunes-data:
