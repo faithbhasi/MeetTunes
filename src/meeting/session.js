@@ -45,6 +45,7 @@ export class MeetingSession extends EventEmitter {
     this.gen = 0; // bumped per join; callbacks from an older session are ignored
     this.reset();
     this.sendQueue = Promise.resolve();
+    this.lock = Promise.resolve(); // see _exclusive()
     this.queued = 0;
     this.recentSent = [];
   }
@@ -186,32 +187,58 @@ export class MeetingSession extends EventEmitter {
    * anyone in the chat could type "the meeting has ended" or "waiting room" to make the bot leave.
    */
   _startMonitor(gen) {
-    let missed = 0;
+    const mon = { missed: 0, audioTries: 0 };
     this.monitor = setInterval(async () => {
       if (gen !== this.gen || !['joined', 'lobby'].includes(this.state) || this.checking) return;
       this.checking = true;
       try {
-        const page = this.page;
-        if (!page || page.isClosed()) return this._cleanup('The browser page closed');
-        if (await this.platform.inMeetingUi(page)) {
-          missed = 0;
-          if (this.state === 'lobby') this._set('joined', 'Back in the meeting');
-          if (!(await this.platform.chatReady(page))) await this._reopenChat();
-          await this.platform.ensureMicOn(page);
-        } else if (await this.platform.isInLobby(page)) {
-          missed = 0;
-          if (this.state !== 'lobby') this._set('lobby', 'Moved back to the lobby - waiting to be admitted again');
-        } else if (await this.platform.hasEnded(page)) {
-          return this._cleanup('The meeting ended (or the bot was removed)');
-        } else if (++missed >= 5) {
-          return this._cleanup('Lost the meeting UI (call ended?)');
-        }
+        await this._exclusive(() => (gen === this.gen ? this._monitorTick(mon) : null));
       } catch (e) {
         log.debug?.(`monitor: ${e.message}`);
       } finally {
         this.checking = false;
       }
     }, config.browser.monitorMs);
+  }
+
+  async _monitorTick(mon) {
+    const page = this.page;
+    if (!page || page.isClosed()) return this._cleanup('The browser page closed');
+    if (await this.platform.inMeetingUi(page)) {
+      mon.missed = 0;
+      if (this.state === 'lobby') this._set('joined', 'Back in the meeting');
+      if (!(await this.platform.chatReady(page))) await this._reopenChat();
+      // Audio-join prompts (Zoom's "Join Audio by Computer") can appear late; connecting audio is harmless
+      // to repeat, unlike un-muting, which must not fight a host who muted the bot on purpose.
+      if (mon.audioTries < 6 && (await this.platform.joinAudio(page))) mon.audioTries++;
+    } else if (await this.platform.isInLobby(page)) {
+      mon.missed = 0;
+      if (this.state !== 'lobby') this._set('lobby', 'Moved back to the lobby - waiting to be admitted again');
+    } else if (await this.platform.hasEnded(page)) {
+      return this._cleanup('The meeting ended (or the bot was removed)');
+    } else if (++mon.missed >= 5) {
+      return this._cleanup('Lost the meeting UI (call ended?)');
+    }
+  }
+
+  /**
+   * Everything that clicks or types in the meeting page (monitor, chat replies, un-mute, leave, Live-view input)
+   * shares ONE mouse and keyboard. Run those one at a time, or a click on "Unmute" can land in the middle of
+   * typing a chat reply and steal its focus.
+   */
+  _exclusive(fn) {
+    const run = this.lock.then(fn);
+    this.lock = run.catch(() => {});
+    return run;
+  }
+
+  /** Ask the meeting client to un-mute the bot (called when music starts, not continuously). */
+  async ensureMic() {
+    return this._exclusive(async () => {
+      if (this.state !== 'joined' || !this.page) return false;
+      await this.platform.joinAudio(this.page);
+      return this.platform.ensureMicOn(this.page);
+    });
   }
 
   /** Re-open the chat panel; whatever it shows afterwards is history, not new commands. */
@@ -232,7 +259,7 @@ export class MeetingSession extends EventEmitter {
     }
     this._set('leaving', 'Leaving...');
     try {
-      if (this.page && !this.page.isClosed()) await this.platform.leave(this.page);
+      if (this.page && !this.page.isClosed()) await this._exclusive(() => this.platform.leave(this.page));
     } catch {
       /* ignore */
     }
@@ -301,7 +328,7 @@ export class MeetingSession extends EventEmitter {
     let last;
     for (let i = 0; i < attempts; i++) {
       try {
-        return await this._sendNow(lines);
+        return await this._exclusive(() => this._sendNow(lines));
       } catch (e) {
         last = e;
         if (this.state !== 'joined') break;
@@ -345,6 +372,11 @@ export class MeetingSession extends EventEmitter {
   async remote(action) {
     const page = this.page;
     if (!page || page.isClosed()) throw new Error('No browser is running');
+    // While joining, the user may be helping (sign-in, captcha) alongside the join loop; once joined, queue behind the bot's own input.
+    return this.joinedOnce ? this._exclusive(() => this._remote(page, action)) : this._remote(page, action);
+  }
+
+  async _remote(page, action) {
     switch (action.type) {
       case 'click':
         if (![action.x, action.y].every((v) => Number.isFinite(v) && v >= 0 && v <= 1)) throw new Error('bad coordinates');

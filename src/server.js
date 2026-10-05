@@ -260,8 +260,10 @@ export async function createServer({ bot, port = config.port, host = config.host
   logger.on('entry', (entry) => broadcast({ type: 'log', entry }));
 
   // progress + VU tick while something is playing
+  // Only the fast-changing bits: re-sending the whole queue twice a second is wasteful with 200 tracks.
   const tick = setInterval(() => {
-    if (clients.size && P.status !== 'idle') broadcast({ type: 'player', player: P.getState() });
+    if (!clients.size || P.status === 'idle') return;
+    broadcast({ type: 'tick', status: P.status, position: P.position, duration: P.current?.duration ?? null, level: P.status === 'playing' ? Math.min(1, P.mixer.level) : 0 });
   }, 500);
 
   // live view: only while someone is watching and a browser exists
@@ -302,6 +304,8 @@ export async function createServer({ bot, port = config.port, host = config.host
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
+  // One bad promise in a chat handler must not take a running bot out of a live meeting.
+  process.on('unhandledRejection', (err) => log.error(`unhandled rejection: ${err?.stack || err}`));
   const srv = await createServer();
   const stop = async () => {
     await srv.close();

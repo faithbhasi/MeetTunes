@@ -90,7 +90,9 @@ export class Player extends EventEmitter {
   add(tracks, { playNow = false, requestedBy = null } = {}) {
     const room = config.media.maxQueue - this.queue.length;
     if (room <= 0) throw new Error(`Queue is full (${config.media.maxQueue})`);
-    tracks = tracks.slice(0, room).map((t) => ({ ...t, requestedBy: t.requestedBy || requestedBy }));
+    // Fresh id per queue entry: the same search result / file can be queued twice, and history, shuffle and
+    // "previous" all track entries by id.
+    tracks = tracks.slice(0, room).map((t) => ({ ...t, id: globalThis.crypto.randomUUID(), requestedBy: t.requestedBy || requestedBy }));
     if (!tracks.length) return [];
     if (playNow) {
       const at = this.status === 'idle' ? this.queue.length : this.index + 1;

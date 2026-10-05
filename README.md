@@ -92,8 +92,8 @@ Persisted in `/data`: settings and the Chromium profile, so a Google/Slack sign-
 ```bash
 npm install
 AUDIO_SINK=none HEADLESS=true ALLOW_MOCK_MEETING=1 npm start   # decodes audio but discards it
-npm test                       # 86 unit / security / robustness tests
-npm run test:e2e               # 28 end-to-end tests (real meeting situations); Linux only: pulseaudio, Xvfb, ffmpeg; run as non-root
+npm test                       # 93 unit / security / robustness tests
+npm run test:e2e               # 30 end-to-end tests (real meeting situations); Linux only: pulseaudio, Xvfb, ffmpeg; run as non-root
 ```
 
 `ALLOW_MOCK_MEETING=1` serves a fake meeting at `/dev/mock-meeting?room=x` - paste that URL to try everything
@@ -102,7 +102,7 @@ without a real call. For real audio on Linux, run `docker/pulse-setup.sh` first 
 ## Security
 
 Set `UI_PASSWORD`, keep the port on localhost or behind a TLS reverse proxy, and read
-[docs/SECURITY.md](docs/SECURITY.md): trust boundaries, the 16 issues found and fixed in the hardening pass, and
+[docs/SECURITY.md](docs/SECURITY.md): trust boundaries, the 20 issues found and fixed in the hardening pass, and
 the remaining limitations (e.g. chat display names are not authentication).
 
 ## Troubleshooting

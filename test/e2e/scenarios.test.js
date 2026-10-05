@@ -138,6 +138,8 @@ t('cancel while waiting in the lobby: stops quickly and frees the browser', asyn
   await waitState('idle', 10000);
   assert.ok(Date.now() - t0 < 6000, 'cancel is prompt');
   assert.equal(srv.bot.session.context, null);
+  await sleep(500);
+  assert.ok(!srv.bot.chatLog.slice(-3).some((c) => /^Joined\./.test(c.text)), 'a cancelled join must not report "Joined"');
 });
 
 t('lobby longer than JOIN_TIMEOUT: times out with a helpful error', async () => {
@@ -234,3 +236,28 @@ t('multi-step pre-join (interstitial, cookie overlay, name gate, camera/mic togg
   const st = await srv.bot.session.page.evaluate(() => ({ cam: window.__cam, mic: window.__mic, name: document.querySelector('#me').textContent }));
   assert.deepEqual(st, { cam: false, mic: true, name: 'TuneBot' }, 'camera turned off, mic turned on, display name used');
 });
+
+t('late audio prompt (Zoom-style "Join Audio by Computer" after entering): bot connects audio and music is heard', async () => {
+  const rm = await joined('&audio=1');
+  await say(rm, 'Alice', '#local alpha');
+  await until(async () => (await level(500)) > 0.02, { timeout: 20000, what: 'music heard after the bot clicked Join Audio' });
+});
+
+t('host mutes the bot on purpose: bot does not fight it until music starts again', async () => {
+  const rm = await joined('&muted=1', { greeting: false });
+  await until(() => srv.bot.session.page.evaluate(() => window.__muted === false), { timeout: 15000, what: 'initial unmute' });
+  // host mutes the bot again
+  await srv.bot.session.page.evaluate(() => { document.querySelector('#unmute').hidden = false; window.__muted = true; });
+  await sleep(4000); // several monitor cycles (600 ms each): the old behaviour re-unmuted within one
+  assert.equal(await srv.bot.session.page.evaluate(() => window.__muted), true, 'bot respects a deliberate host mute');
+  await say(rm, 'Alice', '#local alpha'); // new music is a reason to ask again
+  await until(() => srv.bot.session.page.evaluate(() => window.__muted === false), { timeout: 15000, what: 'unmute when music starts' });
+});
+
+async function level(ms) {
+  return srv.bot.session.page.evaluate(async (ms) => {
+    let m = 0; const end = Date.now() + ms;
+    while (Date.now() < end) { m = Math.max(m, parseFloat(document.querySelector('#mic-level').textContent) || 0); await new Promise((r) => setTimeout(r, 50)); }
+    return m;
+  }, ms);
+}

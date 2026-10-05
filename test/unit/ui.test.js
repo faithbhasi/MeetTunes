@@ -63,3 +63,53 @@ test('UI loads with no console errors and the key controls exist', { skip }, asy
   assert.deepEqual(errors, []);
   await page.close();
 });
+
+test('progress ticks are small (no queue re-sent twice a second)', { skip }, async () => {
+  const { WebSocket } = await import('ws');
+  const bot = srv.bot;
+  bot.player.queue = Array.from({ length: 150 }, (_, i) => ({ id: 'q' + i, kind: 'url', title: 'Track number ' + i, artist: 'Artist', duration: 200, source: 'https://x.test/' + i }));
+  bot.player.index = 0;
+  bot.player.status = 'playing';
+  const msgs = [];
+  const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/ws`);
+  ws.on('message', (m) => msgs.push(String(m)));
+  await new Promise((r) => ws.on('open', r));
+  await sleep(1800);
+  ws.close();
+  bot.player.status = 'idle';
+  bot.player.queue = [];
+  const ticks = msgs.filter((m) => JSON.parse(m).type === 'tick');
+  assert.ok(ticks.length >= 2, `got ${ticks.length} ticks`);
+  assert.ok(ticks.every((t) => t.length < 300), 'ticks carry only status/position/level');
+  assert.ok(!msgs.slice(1).some((m) => JSON.parse(m).type === 'player'), 'no full-state broadcasts while nothing changes');
+});
+
+test('dragging the volume slider sends few requests and ends on the final value', { skip }, async () => {
+  const page = await browser.newPage();
+  const reqs = [];
+  page.on('request', (r) => r.url().endsWith('/api/player/volume') && reqs.push(JSON.parse(r.postData())));
+  await page.goto(`http://127.0.0.1:${srv.port}/`);
+  await sleep(500);
+  await page.evaluate(() => { const v = document.querySelector('#volBar'); for (let i = 1; i <= 60; i++) { v.value = i; v.dispatchEvent(new Event('input')); } });
+  await sleep(500);
+  assert.ok(reqs.length >= 1 && reqs.length <= 6, `${reqs.length} requests for 60 input events`);
+  assert.equal(reqs.at(-1).volume, 60);
+  await page.close();
+});
+
+test('Space on a focused button triggers it once (no double toggle with the global shortcut)', { skip }, async () => {
+  const page = await browser.newPage();
+  const toggles = [];
+  page.on('request', (r) => r.url().endsWith('/api/player/toggle') && toggles.push(1));
+  await page.goto(`http://127.0.0.1:${srv.port}/`);
+  await sleep(500);
+  await page.focus('#btnPlay');
+  await page.keyboard.press('Space');
+  await sleep(400);
+  assert.equal(toggles.length, 1);
+  await page.mouse.click(5, 5); // focus the page body: now the global shortcut applies
+  await page.keyboard.press('Space');
+  await sleep(400);
+  assert.equal(toggles.length, 2);
+  await page.close();
+});

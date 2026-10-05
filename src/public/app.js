@@ -56,6 +56,9 @@ function connect() {
         S.player = m.player; received = performance.now();
         renderPlayer(); renderQueue();
         break;
+      case 'tick':
+        if (S.player) { Object.assign(S.player, { status: m.status, position: m.position, duration: m.duration ?? S.player.duration, level: m.level }); received = performance.now(); renderPlayer(); }
+        break;
       case 'session':
         S.session = m.session;
         if (m.audio) S.audio = m.audio;
@@ -258,7 +261,14 @@ $('#btnLoop').onclick = () => act('/player/loop');
 $('#btnMute').onclick = () => act('/player/mute');
 $('#btnVolUp').onclick = () => act('/player/volume', { delta: 5 });
 $('#btnVolDown').onclick = () => act('/player/volume', { delta: -5 });
-$('#volBar').addEventListener('input', (e) => { setFill(e.target); $('#volText').textContent = e.target.value + '%'; act('/player/volume', { volume: +e.target.value }); });
+// Dragging fires ~60 input events a second: send at most one request per 80 ms (always ending on the final value).
+let volTimer = null, volPending = null;
+$('#volBar').addEventListener('input', (e) => {
+  setFill(e.target); $('#volText').textContent = e.target.value + '%';
+  volPending = +e.target.value;
+  if (volTimer) return;
+  volTimer = setTimeout(() => { volTimer = null; const v = volPending; volPending = null; if (v !== null) act('/player/volume', { volume: v }); }, 80);
+});
 $('#btnClear').onclick = () => act('/queue/clear', { keepCurrent: false });
 
 const seek = $('#seekBar');
@@ -269,7 +279,8 @@ seek.addEventListener('change', async () => {
 });
 
 document.addEventListener('keydown', (e) => {
-  if (/INPUT|TEXTAREA/.test(document.activeElement?.tagName) && document.activeElement.type !== 'range') return;
+  const tag = document.activeElement?.tagName;
+  if (/INPUT|TEXTAREA|BUTTON|SELECT/.test(tag) && document.activeElement.type !== 'range') return; // let focused controls keep Space/Enter
   if (e.code === 'Space') { e.preventDefault(); act('/player/toggle'); }
   else if (e.key === 'ArrowRight' && e.shiftKey) act('/player/next');
   else if (e.key === 'ArrowLeft' && e.shiftKey) act('/player/previous');

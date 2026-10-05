@@ -13,6 +13,7 @@ import express from 'express';
  *   popup=1    window.open() on join           dialog=1   alert() on join
  *   steps=1    realistic pre-join: interstitial ("Continue in browser") -> cookie banner overlay -> name field,
  *              Join disabled until a name is typed, camera on / mic off toggles the bot must flip
+ *   audio=1    mic only starts after the user clicks "Join Audio by Computer" (appears after joining, like Zoom)
  *   relobby=S  host moves the bot back to the lobby S s after join, readmits it 3 s later
  */
 const rooms = new Map();
@@ -52,7 +53,7 @@ input,button,textarea{font:inherit;padding:8px 12px;margin:4px 0}#chat{border:1p
 <section id="lobby" hidden>Please wait, the host will let you in soon...</section>
 <section id="meeting" hidden>
   <p>In meeting <b id="room"></b> as <b id="me"></b> &middot; mic level: <span id="mic-level">0</span> peak: <span id="mic-peak">0</span> &middot; track: <span id="mic-info"></span> <span id="mute-state"></span></p>
-  <button id="unmute" hidden>Unmute</button>
+  <button id="unmute" hidden>Unmute</button> <button id="join-audio" hidden>Join Audio by Computer</button>
   <button id="open-chat">Chat</button> <button id="leave" aria-label="Leave call">Leave</button>
   <div id="chat" hidden></div>
 </section>
@@ -88,6 +89,9 @@ $('#join').onclick = async () => {
   if (q.get('frame')) { $('#chat').innerHTML = '<iframe id="chatframe" style="width:100%;height:340px;border:0" src="/dev/mock-chat-frame?room=' + roomId + '&me=' + encodeURIComponent(me) + '&legacy=' + (legacy ? 1 : 0) + '"></iframe>'; }
   else { $('#chat').innerHTML = ${JSON.stringify(CHAT_HTML)}; $('#chat-send').onclick = () => send(me);
     $('#chat-input').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(me); } }); poll = setInterval(load, 300); load(); }
+  if (q.get('audio')) { $('#join-audio').hidden = false; $('#join-audio').onclick = () => { $('#join-audio').hidden = true; startMic(); }; } else startMic();
+};
+async function startMic() {
   try {
     // Same call a real meeting client makes. MeetTunes' init script strips AEC/NS/AGC from it.
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
@@ -98,7 +102,7 @@ $('#join').onclick = async () => {
     setInterval(() => { an.getFloatTimeDomainData(buf); let m = 0; for (const v of buf) m = Math.max(m, Math.abs(v));
       $('#mic-level').textContent = m.toFixed(3); if (m > peak) { peak = m; $('#mic-peak').textContent = peak.toFixed(3); } }, 100);
   } catch (e) { $('#mic-info').textContent = 'mic error: ' + e.message; }
-};
+}
 $('#unmute').onclick = () => { $('#unmute').hidden = true; $('#mute-state').textContent = 'live'; window.__muted = false; };
 $('#open-chat').onclick = () => { $('#chat').hidden = !$('#chat').hidden; };
 $('#leave').onclick = () => end('You left the meeting.');

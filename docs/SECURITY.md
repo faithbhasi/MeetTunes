@@ -12,7 +12,7 @@ signed into meetings (and possibly into a Google/Slack account). Treat the UI li
 | Meeting page / music sites | No | Run in Chromium; send metadata (titles, thumbnails) that the UI renders |
 | Other web pages in the operator's browser | No | May try CSRF / WebSocket hijack / DNS rebinding against `localhost:3000` |
 
-## Findings from the hardening pass (all fixed, each covered by a test)
+## Findings from the hardening passes (all fixed, each covered by a test)
 
 | # | Severity | Finding | Fix | Test |
 |---|---|---|---|---|
@@ -32,6 +32,10 @@ signed into meetings (and possibly into a Google/Slack account). Treat the UI li
 | 14 | Low | Bot could not leave when moved back to the lobby after joining; cancel during join waited for navigation timeouts | Lobby-after-join state; cancel closes the browser immediately | `scenarios: relobby / cancel` |
 | 15 | Low | A pause pressed while a track was loading was ignored; clean early EOF of a stream skipped the rest of the song | Pending-pause; early-EOF retry; zero-audio ends count as failures | `robustness`, `streamdrop` |
 | 16 | Low | Missing PulseAudio devices meant the meeting heard silence with no explanation | Start-up device check, warning banner in the UI | `robustness: missing PulseAudio devices` |
+| 17 | Medium | **Concurrent page input**: the monitor, chat replies, un-mute, leave and Live-view clicks all drive one mouse/keyboard; an "Unmute" click could land in the middle of typing a reply (found as a ~50% flaky test) | All page interaction is serialised through one lock | `scenarios: host mutes the bot on purpose` (6/6 stable) |
+| 18 | Medium | Bot re-un-muted itself every 4 s even when a host muted it on purpose (rude, and a way to get removed) | Un-mute at join and when music starts (throttled to once per 30 s); the monitor never un-mutes | `scenarios: host mutes the bot on purpose` |
+| 19 | Medium | Zoom-style "Join Audio by Computer" appears *after* entering, so the bot could sit in the call with no microphone | Audio join is attempted at join and retried by the monitor | `scenarios: late audio prompt` |
+| 20 | Low | Queueing the same result twice (`#pick` twice) created two entries with one id, breaking `previous`/shuffle bookkeeping; a video link with `&list=` imported the whole playlist; malformed `%` in a URL and non-JSON yt-dlp output gave cryptic errors; a cancelled join logged "Joined"; one stray rejected promise could crash the process | Fresh id per entry; `--no-playlist` for watch+list links; safe decode + readable errors; state check; global `unhandledRejection` logger | `robustness`, `resolver`, `scenarios: cancel` |
 
 Dependency audit: `npm audit` reports 0 vulnerabilities. Keep **yt-dlp** current (it parses hostile pages);
 the container updates it at start.
@@ -56,7 +60,7 @@ the container updates it at start.
 ## How to re-run the checks
 
 ```bash
-npm test            # 86 unit/security/robustness tests (no audio hardware needed)
-npm run test:e2e    # 28 end-to-end tests with real Chromium + PulseAudio (Linux, non-root)
+npm test            # 93 unit/security/robustness tests (no audio hardware needed)
+npm run test:e2e    # 30 end-to-end tests with real Chromium + PulseAudio (Linux, non-root)
 npm audit
 ```

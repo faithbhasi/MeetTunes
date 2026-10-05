@@ -70,16 +70,19 @@ export class MeetTunes extends EventEmitter {
     this.player.on('state', () => this.emit('player'));
     this.player.on('error', (m) => this._chatEntry({ kind: 'system', sender: 'MeetTunes', text: m }));
     this.player.on('state', () => this._maybeAnnounce());
+    this.player.on('state', () => this._maybeUnmute());
     this.session.on('status', (s) => {
       this.emit('session', s);
       if (s.state === 'joined') this.idleSince = Date.now();
+      if (s.state === 'starting') this._lastUnmute = 0; // the unmute throttle is per meeting
     });
     this.session.on('left', (reason) => {
       this.player.stop();
       this.player.clear();
+      this._wasPlaying = false;
       this._chatEntry({ kind: 'system', sender: 'MeetTunes', text: `Left meeting: ${reason}` });
     });
-    this.session.on('chat', (m) => this._onChat(m));
+    this.session.on('chat', (m) => this._onChat(m).catch((e) => log.error(`chat handler failed: ${e.stack || e}`)));
 
     this.idleTimer = setInterval(() => this._idleCheck(), 30000);
     log.info(`ready (audio sink: ${this.sink.kind}, prefix "${this.settings.prefix}")`);
@@ -153,6 +156,7 @@ export class MeetTunes extends EventEmitter {
     const started = this.session.join({ url, displayName: name });
     started.then(
       () => {
+        if (this.session.state !== 'joined') return; // cancelled while joining: nothing to announce
         this._chatEntry({ kind: 'system', sender: 'MeetTunes', text: `Joined. Type ${this.settings.prefix}help in the meeting chat.` });
         this.sendToMeeting(`MeetTunes is here! Type ${this.settings.prefix}help for commands, e.g. ${this.settings.prefix}play <song name>`);
       },
@@ -237,6 +241,19 @@ export class MeetTunes extends EventEmitter {
       const t = this.player.current;
       this.sendToMeeting(`Now playing: ${t.title}${t.artist ? ' - ' + t.artist : ''}${t.duration ? ` (${fmtTime(t.duration)})` : ''}`);
     }, 400);
+  }
+
+  /**
+   * Unmute the bot's meeting mic when music starts - but at most every 30 s, and never in a loop. If a host
+   * deliberately mutes the bot, it must not fight them; it only asks again when new music starts.
+   */
+  _maybeUnmute() {
+    const playing = this.player.status === 'playing';
+    const started = playing && !this._wasPlaying;
+    this._wasPlaying = playing;
+    if (!started || this.session.state !== 'joined' || Date.now() - (this._lastUnmute || 0) < 30000) return;
+    this._lastUnmute = Date.now();
+    this.session.ensureMic().catch((e) => log.warn(`could not un-mute: ${e.message}`));
   }
 
   _idleCheck() {

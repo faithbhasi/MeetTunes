@@ -182,3 +182,20 @@ test('missing PulseAudio devices are reported (not silently playing into the voi
   assert.match(bot.audio.error, /not found|pactl|Connection|failed/i);
   assert.equal(bot.snapshot().audio.ok, false);
 });
+
+test('REGRESSION: queueing the same track object twice (#pick twice) gives distinct entries', { skip }, async () => {
+  const { player, done } = mkPlayer(slowResolver(0));
+  const t = wav('dup', 20);
+  player.add([t]);
+  player.add([t]);
+  player.add([t]);
+  const ids = player.queue.map((x) => x.id);
+  assert.equal(new Set(ids).size, 3, 'every queue entry has its own id');
+  assert.equal(t.id, 'dup', 'the caller\'s object is not mutated');
+  player.next();
+  player.next();
+  player.previous(); // history is per entry, so this goes back one entry, not to the first
+  await sleep(100);
+  assert.equal(player.index, 1);
+  done();
+});

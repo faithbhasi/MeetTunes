@@ -21,6 +21,7 @@ export class MockMeeting extends Platform {
     ended: ['#ended:not([hidden])', 'text=/meeting has ended|you were removed|host denied/i'],
     leave: ['#leave'],
     unmute: ['#unmute'],
+    audioJoin: ['#join-audio'],
     chat: {
       open: ['#open-chat'],
       message: '.msg',
