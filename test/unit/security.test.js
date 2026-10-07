@@ -127,13 +127,19 @@ test('remote control: bad actions and coordinates are rejected without a browser
   }
 });
 
-test('settings: validated, prototype-pollution safe, file is private', async () => {
-  const r = await req('/api/settings', { method: 'POST', body: { __proto__: { polluted: 1 }, constructor: { prototype: { polluted: 1 } }, prefix: 'a b', displayName: '  Bot  ', allowlist: 'nope', announce: 'yes' } });
+test('settings: validated (bad input is rejected, not silently dropped), prototype-pollution safe, file is private', async () => {
+  const bad = await req('/api/settings', { method: 'POST', body: { prefix: 'a b', displayName: 'Evil' } });
+  assert.equal(bad.status, 400);
+  assert.match((await bad.json()).error, /prefix/i);
+  assert.notEqual(srv.bot.settings.displayName, 'Evil', 'a rejected request applies nothing');
+  assert.equal((await req('/api/settings', { method: 'POST', body: { allowlist: 'nope' } })).status, 400);
+  const r = await req('/api/settings', { method: 'POST', body: { __proto__: { polluted: 1 }, constructor: { prototype: { polluted: 1 } }, displayName: '  Bot  ', announce: 'yes', volume: 9999 } });
   assert.equal(r.status, 200);
   const s = await r.json();
-  assert.equal(s.prefix, '#', 'invalid prefix rejected');
+  assert.equal(s.prefix, '#');
   assert.equal(s.displayName, 'Bot');
-  assert.ok(Array.isArray(s.allowlist));
+  assert.equal(s.volume, 100, 'volume is clamped');
+  assert.equal(s.announce, true, 'non-boolean announce ignored');
   assert.equal(({}).polluted, undefined);
   assert.equal(srv.bot.settings.polluted, undefined);
   const mode = fs.statSync(path.join(tmp, 'data', 'settings.json')).mode & 0o777;

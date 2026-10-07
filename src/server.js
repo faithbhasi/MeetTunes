@@ -299,7 +299,9 @@ export async function createServer({ bot, port = config.port, host = config.host
     server.closeAllConnections?.();
     await new Promise((r) => server.close(r));
   };
-  return { app, server, bot, port: addr.port, close };
+  /** Test hook: sever every UI WebSocket (the UI is expected to reconnect). */
+  const dropClients = () => clients.forEach((ws) => ws.terminate());
+  return { app, server, bot, port: addr.port, close, dropClients };
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

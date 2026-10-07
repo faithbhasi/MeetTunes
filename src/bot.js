@@ -63,6 +63,8 @@ export class MeetTunes extends EventEmitter {
     } catch {
       /* first run or unreadable file: keep defaults */
     }
+    if (Number.isFinite(this.settings.volume)) this.player.setVolume(this.settings.volume); // remember the last volume
+    this._savedVolume = this.mixer.volume;
     await this._checkAudio();
     this.sink.on?.('fatal', (e) => this._audioProblem(`Audio output failed: ${e.message}`));
     this.mixer.start();
@@ -71,6 +73,7 @@ export class MeetTunes extends EventEmitter {
     this.player.on('error', (m) => this._chatEntry({ kind: 'system', sender: 'MeetTunes', text: m }));
     this.player.on('state', () => this._maybeAnnounce());
     this.player.on('state', () => this._maybeUnmute());
+    this.player.on('state', () => this._rememberVolume());
     this.session.on('status', (s) => {
       this.emit('session', s);
       if (s.state === 'joined') this.idleSince = Date.now();
@@ -90,6 +93,7 @@ export class MeetTunes extends EventEmitter {
 
   async shutdown() {
     clearInterval(this.idleTimer);
+    clearTimeout(this._volTimer);
     await this.session.leave('Shutting down').catch(() => {});
     this.mixer.stop();
   }
@@ -124,11 +128,18 @@ export class MeetTunes extends EventEmitter {
     if (typeof patch.prefix === 'string' && /^[^\s\w]{1,2}$/.test(patch.prefix.trim())) s.prefix = patch.prefix.trim();
     if (Array.isArray(patch.allowlist)) s.allowlist = patch.allowlist.map((x) => String(x).trim().slice(0, 60)).filter(Boolean).slice(0, 50);
     if (typeof patch.announce === 'boolean') s.announce = patch.announce;
+    if (Number.isFinite(patch.volume)) s.volume = Math.max(0, Math.min(config.audio.maxVolume, Math.round(patch.volume)));
     return s;
   }
 
   async updateSettings(patch) {
-    const s = this._applySettings(patch || {});
+    patch = patch || {};
+    // The API reports bad input instead of silently ignoring it (loading the file stays lenient).
+    if (patch.prefix !== undefined && !(typeof patch.prefix === 'string' && /^[^\s\w]{1,2}$/.test(patch.prefix.trim()))) {
+      throw new Error('Command prefix must be 1-2 symbols (not letters, digits or spaces), e.g. # or !');
+    }
+    if (patch.allowlist !== undefined && !Array.isArray(patch.allowlist)) throw new Error('allowlist must be a list of names');
+    const s = this._applySettings(patch);
     await this.session.setPrefix(s.prefix);
     await fs.mkdir(config.dataDir, { recursive: true });
     // lastUrl can contain a meeting passcode: keep the file private.
@@ -254,6 +265,17 @@ export class MeetTunes extends EventEmitter {
     if (!started || this.session.state !== 'joined' || Date.now() - (this._lastUnmute || 0) < 30000) return;
     this._lastUnmute = Date.now();
     this.session.ensureMic().catch((e) => log.warn(`could not un-mute: ${e.message}`));
+  }
+
+  /** Persist volume changes (debounced) so a restart doesn't blast or silence the next meeting. */
+  _rememberVolume() {
+    if (this.mixer.volume === this._savedVolume) return;
+    clearTimeout(this._volTimer);
+    this._volTimer = setTimeout(() => {
+      this._savedVolume = this.mixer.volume;
+      this.updateSettings({ volume: this.mixer.volume }).catch((e) => log.warn(`could not save volume: ${e.message}`));
+    }, 1500);
+    this._volTimer.unref?.();
   }
 
   _idleCheck() {

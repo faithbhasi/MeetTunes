@@ -165,8 +165,8 @@ export class Player extends EventEmitter {
   }
 
   async _start(startSec = 0) {
-    const token = ++this.token;
-    this._teardown(false);
+    this._teardown(false); // also invalidates any start that is still waiting for its stream URL
+    const token = this.token;
     const track = this.queue[this.index];
     if (!track) return;
     this.status = 'loading';
@@ -212,6 +212,9 @@ export class Player extends EventEmitter {
   }
 
   _teardown(resetMixer = true) {
+    // Anything still resolving a stream URL for the old track must not start playing afterwards
+    // (clear(), removing the last track, stop() and starting another track all come through here).
+    this.token++;
     if (this.proc) {
       this.proc.removeAllListeners('error');
       this.proc.kill('SIGKILL');
@@ -354,7 +357,6 @@ export class Player extends EventEmitter {
   }
 
   stop() {
-    this.token++;
     this._teardown();
     this.status = 'idle';
     this._changed();

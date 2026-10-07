@@ -60,7 +60,7 @@ the container updates it at start.
 ## How to re-run the checks
 
 ```bash
-npm test            # 93 unit/security/robustness tests (no audio hardware needed)
-npm run test:e2e    # 30 end-to-end tests with real Chromium + PulseAudio (Linux, non-root)
+npm test            # 96 unit/security/robustness tests (no audio hardware needed)
+npm run test:e2e    # 52 end-to-end tests with real Chromium + PulseAudio (Linux, non-root)
 npm audit
 ```

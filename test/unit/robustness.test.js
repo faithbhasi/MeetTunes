@@ -199,3 +199,52 @@ test('REGRESSION: queueing the same track object twice (#pick twice) gives disti
   assert.equal(player.index, 1);
   done();
 });
+
+test('REGRESSION: clear() / remove-last / stop() while a track is still loading must not start a ghost track', { skip }, async () => {
+  for (const how of ['clear', 'remove', 'stop']) {
+    const { player, done } = mkPlayer(slowResolver(300));
+    player.add([wav('ghost-' + how, 10)]);
+    assert.equal(player.status, 'loading');
+    if (how === 'clear') player.clear();
+    else if (how === 'remove') player.remove(0);
+    else player.stop();
+    await sleep(700); // long enough for the pending stream resolution to finish
+    assert.equal(player.status, 'idle', `${how}: nothing may start playing afterwards`);
+    assert.equal(ffmpegProcs(), 0, `${how}: no decoder was spawned`);
+    done();
+  }
+});
+
+test('REGRESSION: starting track B while track A is still loading plays only B', { skip }, async () => {
+  const { player, done } = mkPlayer(slowResolver(250));
+  player.add([wav('slowA', 10), wav('slowB', 10)]);
+  player.play(1);
+  await sleep(700);
+  assert.equal(player.current.title, 'slowB');
+  assert.equal(player.status, 'playing');
+  assert.equal(ffmpegProcs(), 1);
+  done();
+});
+
+test('volume is remembered across restarts (and clamped to the allowed range)', async () => {
+  const fsm = await import('node:fs');
+  const dataDir = process.env.DATA_DIR;
+  fsm.rmSync(path.join(dataDir, 'settings.json'), { force: true });
+  const a = new MeetTunes({ sink: new NullSink() });
+  await a.init();
+  a.player.setVolume(37);
+  await sleep(2200); // saved 1.5 s after the last change
+  assert.equal(JSON.parse(fsm.readFileSync(path.join(dataDir, 'settings.json'), 'utf8')).volume, 37);
+  assert.equal((fsm.statSync(path.join(dataDir, 'settings.json')).mode & 0o077), 0, 'settings file stays private');
+  await a.shutdown();
+  const b = new MeetTunes({ sink: new NullSink() });
+  await b.init();
+  assert.equal(b.mixer.volume, 37, 'restored on start-up');
+  await b.shutdown();
+  fsm.writeFileSync(path.join(dataDir, 'settings.json'), JSON.stringify({ volume: 99999, prefix: '!' }));
+  const c = new MeetTunes({ sink: new NullSink() });
+  await c.init();
+  assert.equal(c.mixer.volume, 100, 'a hand-edited out-of-range value is clamped');
+  assert.equal(c.settings.prefix, '!');
+  await c.shutdown();
+});
