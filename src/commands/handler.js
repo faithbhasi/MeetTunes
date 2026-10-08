@@ -6,6 +6,8 @@ import { canonical } from './parser.js';
 
 const log = getLog('commands');
 const SEARCH_TTL_MS = 5 * 60 * 1000;
+const MAX_ARG = 300; // chat input is untrusted; nothing legitimate needs more
+const MAX_SEARCHERS = 100;
 
 const line = (t) => `${truncate(t.title, 70)}${t.artist ? ` - ${truncate(t.artist, 30)}` : ''}${t.duration ? ` (${fmtTime(t.duration)})` : ''}`;
 
@@ -50,13 +52,18 @@ export class CommandHandler {
     };
   }
 
+  /** Is this (possibly aliased) name a real command? */
+  has(rawName) {
+    return Object.hasOwn(this.table, canonical(rawName));
+  }
+
   /** Run one command. Never throws: errors become a reply. */
   async execute(rawName, args, ctx = {}) {
     const name = canonical(rawName);
-    const fn = this.table[name];
+    const fn = this.has(name) ? this.table[name] : null;
     if (!fn) return `Unknown command "${rawName}". Try ${this.getPrefix()}help`;
     try {
-      return (await fn(args || '', ctx)) || '';
+      return (await fn(String(args || '').slice(0, MAX_ARG), ctx)) || '';
     } catch (e) {
       log.warn(`${name} failed: ${e.message}`);
       return `Error: ${e.message}`;
@@ -68,9 +75,9 @@ export class CommandHandler {
     if (topic) {
       const t = canonical(topic.replace(p, '').toLowerCase());
       const detail = DETAIL[t];
-      if (detail) return detail.replaceAll('{p}', p);
+      if (detail) return detail.replaceAll('{p}', () => p);
     }
-    return HELP.replaceAll('{p}', p);
+    return HELP.replaceAll('{p}', () => p);
   }
 
   async play(query, ctx, { now = false } = {}) {
@@ -108,6 +115,7 @@ export class CommandHandler {
 
   _remember(ctx, results) {
     this.searches.set(ctx.sender || '*', { at: Date.now(), results });
+    if (this.searches.size > MAX_SEARCHERS) this.searches.delete(this.searches.keys().next().value); // bounded memory
   }
 
   async pick(arg, ctx) {

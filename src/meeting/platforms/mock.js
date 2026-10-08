@@ -11,11 +11,17 @@ export class MockMeeting extends Platform {
 
   static defaults = deepMerge(Platform.defaults, {
     nameInput: ['#name'],
+    cookie: ['#cookie-ok'],
+    continueInBrowser: ['#continue'],
+    camOff: ['#cam[data-on="true"]'],
+    micOn: ['#mic[data-on="false"]'],
     joinButton: ['#join'],
     inMeeting: ['#leave'],
-    lobby: ['#lobby'],
-    ended: ['#ended'],
+    lobby: ['#lobby:not([hidden])', 'text=/waiting room|let you in soon/i'],
+    ended: ['#ended:not([hidden])', 'text=/meeting has ended|you were removed|host denied/i'],
     leave: ['#leave'],
+    unmute: ['#unmute'],
+    audioJoin: ['#join-audio'],
     chat: {
       open: ['#open-chat'],
       message: '.msg',

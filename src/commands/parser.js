@@ -4,9 +4,10 @@
  */
 export function parseCommand(text, prefix = '#') {
   if (typeof text !== 'string') return null;
-  const t = text.trim();
+  // Only the first line is the command ("#volume 20\nthanks!" is a command plus chit-chat).
+  const t = text.trim().split(/\r?\n/)[0].trim();
   if (!t.startsWith(prefix)) return null;
-  const m = /^([a-z][a-z0-9_-]*)(?:\s+([\s\S]*))?$/i.exec(t.slice(prefix.length));
+  const m = /^([a-z][a-z0-9_-]*)(?:\s+(.*))?$/i.exec(t.slice(prefix.length));
   if (!m) return null;
   return { name: m[1].toLowerCase(), args: (m[2] || '').trim() };
 }
@@ -43,4 +44,5 @@ export const ALIASES = {
   ff: 'seek',
 };
 
-export const canonical = (name) => ALIASES[name] || name;
+// hasOwn: "#constructor" / "#__proto__" must not resolve to Object.prototype members
+export const canonical = (name) => (Object.hasOwn(ALIASES, name) ? ALIASES[name] : name);

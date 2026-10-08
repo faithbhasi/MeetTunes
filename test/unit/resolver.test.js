@@ -16,6 +16,7 @@ if (/^ytsearch|^scsearch/.test(target)) {
   console.log(JSON.stringify({ _type: 'playlist', entries: Array.from({ length: n }, (_, i) => ({ id: 'id' + i, title: 'Result ' + (i + 1) + ' for ' + target.split(':')[1], uploader: 'Chan', duration: 100 + i, url: 'https://www.youtube.com/watch?v=id' + i, ie_key: 'Youtube' })) }));
 } else if (target.includes('playlist')) {
   console.log(JSON.stringify({ _type: 'playlist', title: 'My List', entries: [{ id: 'a', title: 'A', url: 'https://example.org/a' }, { id: 'b', title: 'B', url: 'https://example.org/b' }] }));
+} else if (target.includes('badjson')) { console.log('WARNING: this is not json');
 } else if (target.includes('fail')) { console.error('ERROR: Video unavailable'); process.exit(1); }
 else console.log(JSON.stringify({ title: 'Single', uploader: 'Me', duration: 42, webpage_url: target, url: 'https://cdn.example.org/audio.m4a', http_headers: { 'User-Agent': 'x' }, thumbnail: 'https://i.example.org/t.jpg' }));
 `, { mode: 0o755 });
@@ -75,4 +76,23 @@ test('yt-dlp failures surface a readable message', async () => {
 test('rejects non-http URLs for playback', async () => {
   const r = new Resolver();
   await assert.rejects(() => r.fromUrl('file:///etc/passwd'), /http/i);
+});
+
+test('a watch link that also has &list= plays just that video, not the whole list', async () => {
+  const r = new Resolver();
+  await r.fromUrl('https://example.org/watch?v=abc&list=PL123');
+  assert.ok(calls().at(-1).includes('--no-playlist'));
+  await r.fromUrl('https://example.org/playlist?list=PL123');
+  assert.ok(!calls().at(-1).includes('--no-playlist'), 'a pure playlist link still imports the playlist');
+});
+
+test('malformed percent-encoding in a direct audio URL is not an error', async () => {
+  const r = new Resolver();
+  const [t] = await r.fromUrl('https://example.org/100%_pure.mp3');
+  assert.equal(t.title, '100%_pure.mp3');
+});
+
+test('garbage from yt-dlp gives a readable error instead of "Unexpected token"', async () => {
+  const r = new Resolver();
+  await assert.rejects(() => r.fromUrl('https://example.org/badjson'), /Could not read the response from yt-dlp/);
 });

@@ -105,3 +105,34 @@ test('changing the prefix at runtime takes effect', { skip }, async () => {
   assert.deepEqual(got.map((m) => m.text), ['!play yes']);
   await page.close();
 });
+
+test('REGRESSION: first user command in an empty chat is not swallowed when other messages arrive in the same scan', { skip }, async () => {
+  const { page, got } = await mkPage(SPEC, '');
+  await arm(page);
+  // the bot's own greeting and the first command land together
+  await add(page, msg('MeetTunes', 'MeetTunes is here! Type #help for commands') + msg('Alice', '#play first song'));
+  await sleep(500);
+  assert.ok(got.some((m) => m.text === '#play first song' && m.sender === 'Alice'), JSON.stringify(got));
+  await page.close();
+});
+
+test('selector-owned messages are not double-reported by the generic scan', { skip }, async () => {
+  const { page, got } = await mkPage(SPEC, '');
+  await arm(page);
+  await add(page, msg('Alice', '#pause'));
+  await sleep(1900);
+  assert.equal(got.filter((m) => m.text === '#pause').length, 1);
+  await page.close();
+});
+
+test('rebaseline treats whatever is on screen as history', { skip }, async () => {
+  const { page, got } = await mkPage(SPEC, '');
+  await arm(page);
+  await add(page, msg('Old', '#play old one') );
+  await page.evaluate(() => window.__mtRebaseline());
+  await sleep(300);
+  await add(page, msg('New', '#play new one'));
+  await sleep(500);
+  assert.deepEqual(got.map((m) => m.text).filter((t) => /one$/.test(t)), ['#play new one']);
+  await page.close();
+});

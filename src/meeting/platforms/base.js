@@ -54,6 +54,10 @@ export class Platform {
   async isInMeeting(page) {
     return (await isVisible(page, this.sel.inMeeting)) && !(await isVisible(page, this.sel.lobby));
   }
+  /** Toolbar-only check (no text patterns): what the monitor trusts, because chat text can't fake a button. */
+  async inMeetingUi(page) {
+    return isVisible(page, this.sel.inMeeting);
+  }
   async isInLobby(page) {
     return isVisible(page, this.sel.lobby);
   }
@@ -115,13 +119,21 @@ export class Platform {
   /** Once inside: make sure the mic is live and the chat panel is open. */
   async afterJoin(ctx) {
     await sleep(1500);
+    // Zoom asks "Join Audio by Computer" only after you are in; without it the bot has no microphone at all.
+    // One immediate try; if the prompt shows up later, the monitor clicks it (see MeetingSession._startMonitor).
+    await this.joinAudio(ctx.page);
     await this.ensureMicOn(ctx.page);
     await this.openChat(ctx.page);
     await sleep(1200); // let any chat history render so it is baselined, not replayed as commands
   }
 
+  /** Connect computer audio if the client shows a prompt for it. Returns true if something was clicked. */
+  async joinAudio(page) {
+    return this.sel.audioJoin.length ? clickFirst(page, this.sel.audioJoin, { timeout: 2000 }) : false;
+  }
+
   async ensureMicOn(page) {
-    if (this.sel.unmute.length) await clickFirst(page, this.sel.unmute, { timeout: 2000 });
+    return this.sel.unmute.length ? clickFirst(page, this.sel.unmute, { timeout: 2000 }) : false;
   }
 
   async chatReady(page) {

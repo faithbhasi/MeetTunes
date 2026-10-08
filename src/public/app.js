@@ -15,6 +15,7 @@ const fmt = (s) => {
 let S = { player: null, session: null, settings: {}, chat: [] };
 let received = performance.now();
 let dragging = false;
+let volDragging = false, volTouchedAt = 0, volResync = null;
 
 // ---- API helpers ------------------------------------------------------------------------------
 function toast(msg, err = false) {
@@ -43,8 +44,8 @@ const act = (path, body = {}) => api(path, body).catch(() => {});
 let ws, liveOn = false;
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-  ws.onopen = () => liveOn && ws.send(JSON.stringify({ type: 'live', on: true }));
-  ws.onclose = () => setTimeout(connect, 1500);
+  ws.onopen = () => { $('#connBanner').hidden = true; if (liveOn) ws.send(JSON.stringify({ type: 'live', on: true })); };
+  ws.onclose = () => { $('#connBanner').hidden = false; setTimeout(connect, 1500); };
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
     switch (m.type) {
@@ -56,16 +57,22 @@ function connect() {
         S.player = m.player; received = performance.now();
         renderPlayer(); renderQueue();
         break;
+      case 'tick':
+        if (S.player) { Object.assign(S.player, { status: m.status, position: m.position, duration: m.duration ?? S.player.duration, level: m.level }); received = performance.now(); renderPlayer(); }
+        break;
       case 'session':
         S.session = m.session;
+        if (m.audio) S.audio = m.audio;
         renderSession();
         break;
       case 'settings':
         S.settings = m.settings;
-        renderSettingsFields();
+        // Settings also change in the background (e.g. the saved volume): never overwrite an open dialog being edited.
+        if ($('#settingsDlg').open) renderCmds(); else renderSettingsFields();
         break;
       case 'chat':
         S.chat.push(m.entry);
+        if (S.chat.length > 200) S.chat.shift();
         addChat(m.entry);
         break;
       case 'frame':
@@ -81,12 +88,19 @@ const STATUS_TEXT = { idle: 'Not in a meeting', starting: 'Starting browser…',
 
 function renderSession() {
   const s = S.session; if (!s) return;
+  const aw = $('#audioWarn');
+  aw.hidden = !S.audio || S.audio.ok !== false;
+  aw.textContent = S.audio?.error ? 'Audio problem: ' + S.audio.error : '';
   const pill = $('#statusPill');
   pill.className = 'pill ' + s.state;
   $('#statusText').textContent = STATUS_TEXT[s.state] || s.state;
   const chip = $('#platformChip');
   chip.hidden = !s.platformLabel || s.state === 'idle';
   chip.textContent = s.platformLabel || '';
+  if (s.state === 'idle' || s.state === 'error') {
+    // The bot's browser is gone: don't keep showing its last frame in Live view.
+    $('#liveImg').removeAttribute('src'); $('#liveImg').hidden = true; $('#liveEmpty').hidden = false;
+  }
   const busy = ['starting', 'joining', 'lobby', 'joined', 'leaving'].includes(s.state);
   $('#btnJoin').hidden = busy; $('#btnLeave').hidden = !busy;
   $('#btnLeave').textContent = s.state === 'joined' ? 'Leave meeting' : 'Cancel';
@@ -110,13 +124,17 @@ function renderPlayer() {
   art.firstElementChild.style.display = cur?.thumbnail ? 'none' : '';
   $('#playIcon').setAttribute('href', p.status === 'playing' || p.status === 'loading' ? '#i-pause' : '#i-play');
   $('#btnShuffle').classList.toggle('on', p.shuffle);
+  $('#btnShuffle').setAttribute('aria-pressed', String(!!p.shuffle));
   $('#btnLoop').classList.toggle('on', p.loop !== 'off');
+  $('#btnLoop').setAttribute('aria-pressed', String(p.loop !== 'off'));
+  $('#btnMute').setAttribute('aria-pressed', String(!!p.muted));
   $('#loopIcon').setAttribute('href', p.loop === 'one' ? '#i-repeat-one' : '#i-repeat');
   $('#btnLoop').title = 'Loop: ' + p.loop;
   $('#muteIcon').setAttribute('href', p.muted || p.volume === 0 ? '#i-mute' : '#i-vol');
   $('#btnMute').classList.toggle('on', p.muted);
   const vb = $('#volBar'); vb.max = p.maxVolume;
-  if (document.activeElement !== vb) { vb.value = p.volume; setFill(vb); }
+  // Don't fight the user's own drag, but do follow changes made elsewhere (chat, API) even if the slider has focus.
+  if (!volDragging && Date.now() - volTouchedAt > 600) { vb.value = p.volume; setFill(vb); }
   $('#volText').textContent = p.muted ? 'muted' : p.volume + '%';
   $('#tDur').textContent = p.duration ? fmt(p.duration) : cur ? 'live' : '--:--';
   $('#seekBar').disabled = !cur || !p.duration;
@@ -149,7 +167,8 @@ function trackRow(t, { index, current, results } = {}) {
 }
 const iconBtn = (icon, title, fn) => {
   const b = el('button', { className: 'icon-btn sm', title, type: 'button' });
-  b.innerHTML = `<svg class="ic"><use href="#i-${icon}"/></svg>`;
+  b.setAttribute('aria-label', title);
+  b.innerHTML = `<svg class="ic" aria-hidden="true"><use href="#i-${icon}"/></svg>`;
   b.onclick = (e) => { e.stopPropagation(); fn(); };
   return b;
 };
@@ -236,6 +255,7 @@ $('#btnJoin').onclick = async () => {
   await act('/join', { url, displayName: $('#displayName').value.trim() });
 };
 $('#btnLeave').onclick = () => act('/leave');
+for (const id of ['#meetingUrl', '#displayName']) $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('#btnJoin').click(); } });
 $('#meetingUrl').addEventListener('input', async (e) => {
   const url = e.target.value.trim();
   if (!/^https?:\/\//i.test(url)) return ($('#meetingNote').textContent = '');
@@ -254,21 +274,44 @@ $('#btnLoop').onclick = () => act('/player/loop');
 $('#btnMute').onclick = () => act('/player/mute');
 $('#btnVolUp').onclick = () => act('/player/volume', { delta: 5 });
 $('#btnVolDown').onclick = () => act('/player/volume', { delta: -5 });
-$('#volBar').addEventListener('input', (e) => { setFill(e.target); $('#volText').textContent = e.target.value + '%'; act('/player/volume', { volume: +e.target.value }); });
+// Dragging fires ~60 input events a second: send at most one request per 80 ms (always ending on the final value).
+let volTimer = null, volPending = null;
+const volBar = $('#volBar');
+volBar.addEventListener('pointerdown', () => (volDragging = true));
+addEventListener('pointerup', () => (volDragging = false));
+addEventListener('pointercancel', () => (volDragging = false));
+volBar.addEventListener('input', (e) => {
+  volTouchedAt = Date.now();
+  // The guard in renderPlayer ignores server updates for a moment; re-render afterwards so the slider can't stay stale.
+  clearTimeout(volResync); volResync = setTimeout(renderPlayer, 700);
+  setFill(e.target); $('#volText').textContent = e.target.value + '%';
+  volPending = +e.target.value;
+  if (volTimer) return;
+  volTimer = setTimeout(() => { volTimer = null; const v = volPending; volPending = null; if (v !== null) act('/player/volume', { volume: v }); }, 80);
+});
 $('#btnClear').onclick = () => act('/queue/clear', { keepCurrent: false });
 
 const seek = $('#seekBar');
 seek.addEventListener('input', () => { dragging = true; setFill(seek); if (S.player?.duration) $('#tCur').textContent = fmt((seek.value / 1000) * S.player.duration); });
 seek.addEventListener('change', async () => {
-  if (S.player?.duration) await act('/player/seek', { position: (seek.value / 1000) * S.player.duration });
+  if (S.player?.duration) {
+    const target = (seek.value / 1000) * S.player.duration;
+    S.player.position = target; // show it at once; the next server tick confirms
+    received = performance.now(); dragging = false;
+    await act('/player/seek', { position: target });
+  }
   received = performance.now(); dragging = false;
 });
 
 document.addEventListener('keydown', (e) => {
-  if (/INPUT|TEXTAREA/.test(document.activeElement?.tagName) && document.activeElement.type !== 'range') return;
-  if (e.code === 'Space') { e.preventDefault(); act('/player/toggle'); }
-  else if (e.key === 'ArrowRight' && e.shiftKey) act('/player/next');
-  else if (e.key === 'ArrowLeft' && e.shiftKey) act('/player/previous');
+  const el = document.activeElement;
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(el?.tagName) && el.type !== 'range' && el.type !== 'checkbox' && el.type !== 'file';
+  if (typing || e.ctrlKey || e.metaKey || e.altKey) return; // never hijack typing or browser shortcuts
+  if (e.code === 'Space') {
+    if (el?.tagName === 'BUTTON' || el?.tagName === 'SUMMARY' || el?.tagName === 'A') return; // Space activates the focused control
+    e.preventDefault(); act('/player/toggle');
+  } else if (e.shiftKey && e.key === 'ArrowRight') { e.preventDefault(); act('/player/next'); }
+  else if (e.shiftKey && e.key === 'ArrowLeft') { e.preventDefault(); act('/player/previous'); }
 });
 
 // search
@@ -294,6 +337,7 @@ async function quickAdd(now) {
   try { const r = await api('/queue/add', { query: q, now }); note.textContent = r.message || ''; $('#searchInput').value = ''; } catch (err) { note.textContent = err.message; }
 }
 $('#btnQuick').onclick = () => quickAdd(false);
+$('#searchInput').addEventListener('input', () => { $('#searchNote').textContent = ''; }); // don't leave an old error under a new query
 
 // chat
 $('#chatForm').addEventListener('submit', async (e) => {
@@ -317,7 +361,7 @@ $('#uploadInput').addEventListener('change', async (e) => {
 // live view
 const dlg = $('#liveDlg');
 const setLive = (on) => { liveOn = on; ws?.readyState === 1 && ws.send(JSON.stringify({ type: 'live', on })); };
-$('#btnLive').onclick = () => { $('#liveEmpty').hidden = !!$('#liveImg').src; $('#liveImg').hidden = !$('#liveImg').src; dlg.showModal(); setLive(true); };
+$('#btnLive').onclick = () => { const has = !!$('#liveImg').getAttribute('src'); $('#liveEmpty').hidden = has; $('#liveImg').hidden = !has; dlg.showModal(); setLive(true); };
 $('#liveClose').onclick = () => dlg.close();
 dlg.addEventListener('close', () => setLive(false));
 $('#liveImg').addEventListener('click', (e) => {
@@ -329,13 +373,23 @@ dlg.querySelectorAll('[data-key]').forEach((b) => (b.onclick = () => act('/remot
 dlg.querySelectorAll('[data-scroll]').forEach((b) => (b.onclick = () => act('/remote', { type: 'scroll', dy: +b.dataset.scroll })));
 
 // settings
-$('#btnSettings').onclick = () => $('#settingsDlg').showModal();
+$('#btnSettings').onclick = () => { renderSettingsFields(); $('#settingsDlg').showModal(); };
 $('#settingsClose').onclick = () => $('#settingsDlg').close();
 $('#settingsForm').addEventListener('submit', async (e) => {
   e.preventDefault();
-  await act('/settings', { prefix: $('#setPrefix').value, allowlist: $('#setAllow').value.split(',').map((s) => s.trim()).filter(Boolean), announce: $('#setAnnounce').checked });
-  $('#settingsDlg').close(); toast('Settings saved');
+  try {
+    await api('/settings', { prefix: $('#setPrefix').value, allowlist: $('#setAllow').value.split(',').map((s) => s.trim()).filter(Boolean), announce: $('#setAnnounce').checked });
+    $('#settingsDlg').close(); toast('Settings saved');
+  } catch { /* api() already showed the reason; keep the dialog open so nothing is lost */ }
 });
+
+// Files dropped into the mounted music folder show up without a page reload.
+setInterval(() => !document.hidden && renderLibrary(), 20000);
+document.addEventListener('visibilitychange', () => !document.hidden && renderLibrary());
+
+// Icon-only buttons get an accessible name from their tooltip.
+document.querySelectorAll('button[title]').forEach((b) => !b.hasAttribute('aria-label') && b.setAttribute('aria-label', b.title));
+document.querySelectorAll('svg.ic').forEach((i) => i.setAttribute('aria-hidden', 'true'));
 
 connect();
 requestAnimationFrame(raf);

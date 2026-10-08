@@ -4,8 +4,8 @@
  *
  * - Messages are keyed by id (when the platform has one) or sender|time|text, with occurrence counting,
  *   so re-rendered/virtualised lists don't replay history while a user repeating "#next" still works.
- * - Until the platform-specific selector matches something, a generic text scan looks for text starting
- *   with the command prefix. That keeps commands working when a platform changes its markup.
+ * - A generic text scan (text starting with the command prefix, outside anything the platform selectors
+ *   own) keeps commands working when a platform changes its markup.
  *
  * NOTE: this function is serialised with toString(); it must stay self-contained.
  */
@@ -53,6 +53,10 @@ export function chatObserverInit(spec) {
     return out;
   }
 
+  /**
+   * Safety net for when the platform selectors are stale: any text node that starts with the command prefix.
+   * Text that lives inside an element the platform selector already owns is skipped (no double reports).
+   */
   function collectGeneric() {
     const out = [];
     if (!document.body) return out;
@@ -63,21 +67,22 @@ export function chatObserverInit(spec) {
       if (!s || s.indexOf(S.spec.prefix) !== 0) continue;
       const p = n.parentElement;
       if (!p || p.closest('input,textarea,script,style,[contenteditable="true"],[contenteditable=""],[role="textbox"]')) continue;
-      out.push({ sender: '', text: s, key: 'g\u0001' + s });
+      let owned = false;
+      try {
+        owned = !!(S.spec.message && p.closest(S.spec.message));
+      } catch (e) {
+        /* invalid selector override: treat as not owned */
+      }
+      if (owned) continue;
+      out.push({ sender: '', text: s.split('\n')[0], key: 'g\u0001' + s });
     }
     return out;
   }
 
   function scan(emit) {
-    let items = collectSpec();
-    if (items.length && !S.specHit) {
-      // First time the platform selector matches. Several messages appearing at once means a history list
-      // was just rendered (chat panel opened late) - don't replay it. A single message is a real new one.
-      S.specHit = true;
-      S.seen.clear();
-      if (items.length > 1) emit = false;
-    }
-    if (!S.specHit) items = collectGeneric();
+    const spec = collectSpec();
+    S.specHit = S.specHit || spec.length > 0;
+    const items = spec.concat(collectGeneric());
     const counts = new Map();
     for (const it of items) {
       const c = (counts.get(it.key) || 0) + 1;
@@ -86,7 +91,7 @@ export function chatObserverInit(spec) {
         S.seen.set(it.key, c);
         if (emit && typeof window.__mtChat === 'function') {
           try {
-            window.__mtChat(JSON.stringify({ sender: it.sender, text: it.text, mode: S.specHit ? 'dom' : 'generic' }));
+            window.__mtChat(JSON.stringify({ sender: it.sender, text: it.text, mode: it.key.charAt(0) === 'g' && it.key.charAt(1) === '\u0001' ? 'generic' : 'dom' }));
           } catch (e) {
             /* binding gone */
           }
@@ -111,6 +116,11 @@ export function chatObserverInit(spec) {
     scan(false);
     new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
     S.timer = setInterval(() => scan(true), 1500);
+  };
+  // Chat panel was (re)opened: whatever is on screen now is history, not new commands.
+  window.__mtRebaseline = () => {
+    S.seen.clear();
+    scan(false);
   };
   window.__mtSetPrefix = (p) => {
     S.spec.prefix = p;

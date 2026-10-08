@@ -41,6 +41,7 @@ export class Player extends EventEmitter {
     this.offsetMs = 0;
     this.failStreak = 0;
     this.retries = 0;
+    this.startPaused = false; // pause requested while a track was still loading
     this.lastError = null;
     mixer.on('sourceEnd', (e) => this._onSourceEnd(e));
     mixer.setVolume(clamp(config.audio.defaultVolume, 0, config.audio.maxVolume));
@@ -71,6 +72,7 @@ export class Player extends EventEmitter {
       loop: this.loop,
       shuffle: this.shuffle,
       level: this.status === 'playing' ? Math.min(1, this.mixer.level) : 0,
+      pausedPending: this.startPaused,
       queue: this.queue.map(pub),
       error: this.lastError,
     };
@@ -88,7 +90,9 @@ export class Player extends EventEmitter {
   add(tracks, { playNow = false, requestedBy = null } = {}) {
     const room = config.media.maxQueue - this.queue.length;
     if (room <= 0) throw new Error(`Queue is full (${config.media.maxQueue})`);
-    tracks = tracks.slice(0, room).map((t) => ({ ...t, requestedBy: t.requestedBy || requestedBy }));
+    // Fresh id per queue entry: the same search result / file can be queued twice, and history, shuffle and
+    // "previous" all track entries by id.
+    tracks = tracks.slice(0, room).map((t) => ({ ...t, id: globalThis.crypto.randomUUID(), requestedBy: t.requestedBy || requestedBy }));
     if (!tracks.length) return [];
     if (playNow) {
       const at = this.status === 'idle' ? this.queue.length : this.index + 1;
@@ -156,12 +160,13 @@ export class Player extends EventEmitter {
     this.played.add(this.queue[i].id);
     if (!keepFail) this.failStreak = 0;
     this.retries = 0;
+    this.startPaused = false;
     this._start(startSec).catch((e) => this._fail(e.message));
   }
 
   async _start(startSec = 0) {
-    const token = ++this.token;
-    this._teardown(false);
+    this._teardown(false); // also invalidates any start that is still waiting for its stream URL
+    const token = this.token;
     const track = this.queue[this.index];
     if (!track) return;
     this.status = 'loading';
@@ -169,6 +174,7 @@ export class Player extends EventEmitter {
     this.offsetMs = startSec * 1000;
     this.mixer.setPaused(false);
     this._changed();
+
 
     let stream;
     try {
@@ -185,7 +191,9 @@ export class Player extends EventEmitter {
     proc.stderr.on('data', (d) => log.debug(`ffmpeg: ${String(d).trim()}`));
     proc.exited = new Promise((res) => proc.once('close', (code, sig) => res({ code, sig })));
     this.mixer.setSource(proc.stdout, token);
-    this.status = 'playing';
+    this.status = this.startPaused ? 'paused' : 'playing';
+    this.mixer.setPaused(this.startPaused);
+    this.startPaused = false;
     log.info(`playing "${track.title}"${startSec ? ` from ${Math.round(startSec)}s` : ''}`);
     this._changed();
   }
@@ -204,6 +212,9 @@ export class Player extends EventEmitter {
   }
 
   _teardown(resetMixer = true) {
+    // Anything still resolving a stream URL for the old track must not start playing afterwards
+    // (clear(), removing the last track, stop() and starting another track all come through here).
+    this.token++;
     if (this.proc) {
       this.proc.removeAllListeners('error');
       this.proc.kill('SIGKILL');
@@ -239,14 +250,15 @@ export class Player extends EventEmitter {
     const pos = this.position;
     if (pos > 1) this.failStreak = 0;
     const cut = exit.code !== 0 && exit.code !== null;
-    const early = track?.duration && pos < track.duration - 5 && (cut || exit.code === null);
-    if ((cut || early) && this.retries < 2 && pos > 0) {
+    // A clean EOF long before the known duration is a truncated stream (server/network closed it), not the end.
+    const early = !!track?.duration && pos < track.duration - 5;
+    if (pos === 0) return this._fail(`Playback failed for "${track?.title}" (no audio received)`);
+    if ((cut || early) && this.retries < 2) {
       this.retries++;
-      log.warn(`stream for "${track?.title}" dropped at ${Math.round(pos)}s - retrying`);
+      log.warn(`stream for "${track?.title}" ended early at ${Math.round(pos)}s - retrying`);
       if (track) track._stream = null;
       return this._start(pos).catch((e) => this._fail(e.message));
     }
-    if (cut && pos === 0) return this._fail(`Playback failed for "${track?.title}"`);
     this._advance();
   }
 
@@ -309,6 +321,11 @@ export class Player extends EventEmitter {
   }
 
   pause() {
+    if (this.status === 'loading') {
+      this.startPaused = true; // takes effect the moment the track starts
+      this._changed();
+      return true;
+    }
     if (this.status !== 'playing') return false;
     this.status = 'paused';
     this.mixer.setPaused(true);
@@ -317,6 +334,11 @@ export class Player extends EventEmitter {
   }
 
   resume() {
+    if (this.status === 'loading') {
+      this.startPaused = false;
+      this._changed();
+      return true;
+    }
     if (this.status === 'paused') {
       this.status = 'playing';
       this.mixer.setPaused(false);
@@ -335,7 +357,6 @@ export class Player extends EventEmitter {
   }
 
   stop() {
-    this.token++;
     this._teardown();
     this.status = 'idle';
     this._changed();
@@ -346,13 +367,10 @@ export class Player extends EventEmitter {
     if (!track) throw new Error('Nothing is playing');
     const max = track.duration ? Math.max(0, track.duration - 1) : Infinity;
     sec = clamp(sec, 0, max);
-    const wasPaused = this.status === 'paused';
+    const wasPaused = this.status === 'paused' || (this.status === 'loading' && this.startPaused);
     this.retries = 0;
-    this._start(sec)
-      .then(() => {
-        if (wasPaused && this.status === 'playing') this.pause();
-      })
-      .catch((e) => this._fail(e.message));
+    this.startPaused = wasPaused; // a seek must not un-pause
+    this._start(sec).catch((e) => this._fail(e.message));
   }
 
   // ---- volume / modes -------------------------------------------------------------------------

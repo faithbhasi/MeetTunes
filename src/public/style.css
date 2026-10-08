@@ -20,6 +20,8 @@
   }
 }
 * { box-sizing: border-box; }
+/* Author rules like .btn { display: inline-flex } would otherwise beat the UA's [hidden] rule and show hidden elements. */
+[hidden] { display: none !important; }
 html, body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 code { background: var(--panel-2); padding: 1px 6px; border-radius: 6px; font-size: 13px; }
 h2 { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 14px; font-weight: 600; }
@@ -131,3 +133,5 @@ dialog::backdrop { background: rgba(0,0,0,.6); }
 .toast { background: var(--panel-2); border: 1px solid var(--line); border-left: 4px solid var(--accent); padding: 10px 14px; border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
 .toast.err { border-left-color: var(--bad); }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+.banner { background: color-mix(in srgb, var(--warn) 22%, var(--panel)); border-bottom: 1px solid var(--warn); padding: 8px 20px; text-align: center; font-size: 14px; }

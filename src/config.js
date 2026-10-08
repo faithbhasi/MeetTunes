@@ -11,6 +11,8 @@ export const config = {
   host: env.HOST || '0.0.0.0',
   /** HTTP basic-auth password for the web UI. Empty = no auth (only do that on localhost!). */
   uiPassword: env.UI_PASSWORD || '',
+  /** Extra Host header values accepted when no UI_PASSWORD is set (DNS-rebinding guard). localhost/IPs always pass. */
+  allowedHosts: (env.ALLOWED_HOSTS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
   dataDir,
   profileDir: path.resolve(env.PROFILE_DIR || path.join(dataDir, 'profile')),
   musicDir: path.resolve(env.MUSIC_DIR || './music'),
@@ -18,6 +20,8 @@ export const config = {
   defaultDisplayName: env.BOT_NAME || 'MeetTunes',
   commandPrefix: env.COMMAND_PREFIX || '#',
   /** Comma separated display names allowed to use chat commands. Empty = everyone. */
+  /** Chat command rate limit: per sender, and across everyone, per 10 s window. */
+  commandRate: { perSender: int(env.COMMANDS_PER_10S, 8), global: int(env.COMMANDS_GLOBAL_PER_10S, 20) },
   commandAllowlist: (env.COMMAND_ALLOWLIST || '').split(',').map((s) => s.trim()).filter(Boolean),
 
   audio: {
@@ -42,6 +46,8 @@ export const config = {
     cookiesFile: env.YTDLP_COOKIES || '',
     maxQueue: int(env.MAX_QUEUE, 200),
     maxPlaylistImport: int(env.MAX_PLAYLIST_IMPORT, 50),
+    ytdlpTimeoutMs: int(env.YTDLP_TIMEOUT_SEC, 45) * 1000,
+    ytdlpConcurrency: int(env.YTDLP_CONCURRENCY, 3),
     /** Block private / loopback hosts for URLs coming in via chat (SSRF guard). */
     allowPrivateUrls: bool(env.ALLOW_PRIVATE_URLS, false),
   },
@@ -53,6 +59,7 @@ export const config = {
     joinTimeoutMs: int(env.JOIN_TIMEOUT_SEC, 600) * 1000, // how long we wait in a lobby to be admitted
     selectorsFile: env.SELECTORS_FILE || '',
     allowMockMeeting: bool(env.ALLOW_MOCK_MEETING, false),
+    monitorMs: int(env.MONITOR_INTERVAL_MS, 4000),
   },
 
   /** Leave automatically after N minutes with nothing playing and no commands. 0 = never. */

@@ -36,19 +36,28 @@ export class Library {
     } catch {
       return [];
     }
-    const items = [];
+    const files = [];
     for (const name of names.sort((a, b) => a.localeCompare(b))) {
       if (name.startsWith('.') || !AUDIO_EXT.has(path.extname(name).toLowerCase())) continue;
       const full = path.join(this.dir, name);
-      let st;
       try {
-        st = await fsp.stat(full);
+        const st = await fsp.stat(full);
+        if (st.isFile()) files.push({ name, full, st });
       } catch {
-        continue;
+        /* vanished */
       }
-      if (!st.isFile()) continue;
-      items.push({ name, size: st.size, ...(await this._probe(name, full, st)) });
     }
+    // ffprobe is slow on first sight of a file: do a few at a time instead of one by one.
+    const items = new Array(files.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < files.length) {
+        const i = next++;
+        const { name, full, st } = files[i];
+        items[i] = { name, size: st.size, ...(await this._probe(name, full, st)) };
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, files.length) }, worker));
     return items;
   }
 

@@ -58,6 +58,12 @@ what a human does - and feed the browser a virtual microphone. That is what Meet
   commands from another "participant", replies in chat, and the page's own microphone analyser confirms the
   audio really arrives through the PulseAudio virtual mic, follows `#volume`, `#mute`, `#pause`, `#seek`.
 * Chat observer: grouped senders, id/occurrence de-duplication, re-render safety, generic fallback, prefix change.
+* Meeting situations (mock meeting): lobby, host denies entry, host ends meeting, bot removed, spoofed
+  "meeting ended" chat text, chat in an iframe, host mutes the bot, self-closing chat panel, renamed chat markup,
+  popups/dialogs, moved back to the lobby, cancel while waiting, join timeout, browser crash then rejoin,
+  concurrent joins, command floods, hostile/long/unicode input, multi-step pre-join with camera/mic toggles.
+* Security and robustness: auth, CSRF/WebSocket hijack, DNS rebinding, SSRF, path traversal, XSS, rate limits,
+  stream drops, yt-dlp hangs, 90 s soak (no clock drift, ~3% CPU, flat memory). See SECURITY.md.
 * yt-dlp integration (against a fake binary), URL safety guard, local library path-traversal protection,
   command parsing / handling, platform detection (including look-alike hostnames).
 
