@@ -1,6 +1,6 @@
 {
   "name": "meettunes",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A Discord-style music bot that joins Zoom / Teams / Google Meet / Webex / Slack meetings, controlled from a web UI and from meeting chat.",
   "type": "module",
   "main": "src/server.js",

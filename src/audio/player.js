@@ -109,7 +109,7 @@ export class Player extends EventEmitter {
   }
 
   remove(i) {
-    if (i < 0 || i >= this.queue.length) throw new Error('No such queue position');
+    if (!Number.isInteger(i) || i < 0 || i >= this.queue.length) throw new Error('No such queue position');
     const [t] = this.queue.splice(i, 1);
     if (i < this.index) this.index--;
     else if (i === this.index && this.status !== 'idle') {
@@ -126,7 +126,7 @@ export class Player extends EventEmitter {
 
   move(from, to) {
     const n = this.queue.length;
-    if (from < 0 || from >= n || to < 0 || to >= n) throw new Error('No such queue position');
+    if (![from, to].every((x) => Number.isInteger(x) && x >= 0 && x < n)) throw new Error('No such queue position');
     const cur = this.queue[this.index];
     const [t] = this.queue.splice(from, 1);
     this.queue.splice(to, 0, t);
@@ -153,7 +153,7 @@ export class Player extends EventEmitter {
   /** Start playing the queue item at `i`. */
   play(i = this.index, { fromHistory = false, startSec = 0, keepFail = false } = {}) {
     if (!this.queue.length) throw new Error('The queue is empty');
-    if (i < 0 || i >= this.queue.length) i = 0;
+    if (!Number.isInteger(i) || i < 0 || i >= this.queue.length) i = 0;
     const prev = this.queue[this.index];
     if (!fromHistory && prev && this.status !== 'idle' && prev.id !== this.queue[i].id) this.history.push(prev.id);
     this.index = i;

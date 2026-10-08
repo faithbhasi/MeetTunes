@@ -16,14 +16,46 @@ function isPrivateV4(ip) {
   );
 }
 
+/** Expand any IPv6 text form (incl. "::" and a dotted tail) into its 16 bytes, or null if it isn't valid. */
+function ipv6Bytes(ip) {
+  let l = ip.toLowerCase().split('%')[0];
+  const dotted = /(\d+\.\d+\.\d+\.\d+)$/.exec(l);
+  if (dotted) {
+    const o = dotted[1].split('.').map(Number);
+    if (o.some((n) => n > 255)) return null;
+    l = l.slice(0, -dotted[1].length) + ((o[0] << 8) | o[1]).toString(16) + ':' + ((o[2] << 8) | o[3]).toString(16);
+  }
+  const halves = l.split('::');
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 1 ? missing !== 0 : missing < 1) return null;
+  const groups = [...head, ...Array(halves.length === 2 ? missing : 0).fill('0'), ...tail];
+  const out = [];
+  for (const g of groups) {
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+    const n = parseInt(g, 16);
+    out.push(n >> 8, n & 255);
+  }
+  return out.length === 16 ? out : null;
+}
+
 export function isPrivateAddress(ip) {
   if (net.isIPv4(ip)) return isPrivateV4(ip);
   if (net.isIPv6(ip)) {
-    const l = ip.toLowerCase();
-    if (l === '::1' || l === '::') return true;
-    if (l.startsWith('fe80') || l.startsWith('fc') || l.startsWith('fd')) return true;
-    const m = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(l);
-    if (m) return isPrivateV4(m[1]);
+    const b = ipv6Bytes(ip);
+    if (!b) return true; // can't parse: refuse
+    const v4 = (i) => `${b[i]}.${b[i + 1]}.${b[i + 2]}.${b[i + 3]}`;
+    const zeros = (from, to) => b.slice(from, to).every((x) => x === 0);
+    if (zeros(0, 15) && b[15] <= 1) return true; // :: and ::1
+    if (zeros(0, 10) && ((b[10] === 255 && b[11] === 255) || zeros(10, 12))) return isPrivateV4(v4(12)); // ::ffff:a.b.c.d and ::a.b.c.d
+    if (b[0] === 0x00 && b[1] === 0x64 && b[2] === 0xff && b[3] === 0x9b && zeros(4, 12)) return isPrivateV4(v4(12)); // NAT64 64:ff9b::/96
+    if (b[0] === 0x20 && b[1] === 0x02) return isPrivateV4(v4(2)); // 6to4 2002::/16 embeds an IPv4 address
+    if (b[0] === 0x20 && b[1] === 0x01 && b[2] === 0 && b[3] === 0) return true; // Teredo 2001::/32
+    if (b[0] === 0xff) return true; // multicast
+    if ((b[0] & 0xfe) === 0xfc) return true; // fc00::/7 unique local
+    if (b[0] === 0xfe && (b[1] & 0xc0) >= 0x80) return true; // fe80::/10 link-local and fec0::/10 site-local
     return false;
   }
   return true;
