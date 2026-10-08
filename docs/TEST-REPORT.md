@@ -9,7 +9,7 @@ the GUI test). Screenshots from the GUI run: `GUI_SHOTS=/some/dir npm run test:e
 
 | Suite | Tests | Result |
 |---|---|---|
-| Unit / security / robustness | 96 | all pass |
+| Unit / security / robustness | 99 | all pass |
 | End-to-end: basic meeting flow | 9 | all pass |
 | End-to-end: meeting situations (deny, end, kick, lobby, iframe chat, mute, crash, flood, ...) | 21 | all pass |
 | End-to-end: **GUI, every control** | 22 | all pass |

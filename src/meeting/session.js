@@ -244,7 +244,7 @@ export class MeetingSession extends EventEmitter {
   /** Re-open the chat panel; whatever it shows afterwards is history, not new commands. */
   async _reopenChat() {
     if (!(await this.platform.openChat(this.page))) return false;
-    await sleep(900);
+    await sleep(500);
     for (const f of framesOf(this.page)) await f.evaluate(() => window.__mtRebaseline?.()).catch(() => {});
     return true;
   }
@@ -324,7 +324,7 @@ export class MeetingSession extends EventEmitter {
   }
 
   /** The panel can close or re-render between "is it open?" and typing: retry a few times, re-opening each time. */
-  async _sendWithRetry(lines, attempts = 3) {
+  async _sendWithRetry(lines, attempts = 4) {
     let last;
     for (let i = 0; i < attempts; i++) {
       try {
@@ -344,14 +344,23 @@ export class MeetingSession extends EventEmitter {
     if (!(await this.platform.chatReady(page))) await this._reopenChat();
     const input = await findVisible(page, this.platform.sel.chat.input);
     if (!input) throw new Error('chat input not found (see Live View / selectors override)');
-    await input.click({ timeout: 3000 });
+    await input.click({ timeout: 1500 }); // an element that vanished will not come back: fail fast and retry
+    // A previous attempt may have left text behind (panel closed before Enter): never send it twice.
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Backspace');
     for (let i = 0; i < lines.length; i++) {
       if (i) await page.keyboard.press('Shift+Enter');
       if (lines[i]) await page.keyboard.insertText(lines[i]);
     }
+    // Typing into a panel that just closed does not throw - the text simply goes nowhere. Check, so the retry kicks in.
+    if (!(await input.isVisible().catch(() => false))) throw new Error('chat panel closed while typing');
     const sendBtn = this.platform.sel.chat.send.length ? await findVisible(page, this.platform.sel.chat.send) : null;
     if (sendBtn) await sendBtn.click({ timeout: 3000 }).catch(() => page.keyboard.press('Enter'));
     else await page.keyboard.press('Enter');
+    // If the box still holds our text, the message was not sent (panel closed before Enter, send ignored).
+    await sleep(120);
+    const left = await input.evaluate((el) => (el.value ?? el.innerText ?? '').trim()).catch(() => ''); // gone/re-rendered = sent
+    if (left && lines.some((l) => l && left.includes(l.slice(0, 20)))) throw new Error('chat message was not sent');
   }
 
   async setPrefix(prefix) {

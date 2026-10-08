@@ -1,5 +1,5 @@
 import { sleep } from '../../util.js';
-import { clickFirst, deepMerge, fillFirst, isVisible } from '../helpers.js';
+import { clickFirst, deepMerge, fillFirst, isVisible, pollUntil } from '../helpers.js';
 
 /**
  * A Platform knows how to drive one meeting product's *web client*: pre-join screen, lobby, in-meeting
@@ -143,8 +143,8 @@ export class Platform {
   async openChat(page) {
     if (await this.chatReady(page)) return true;
     if (this.sel.chat.open.length && (await clickFirst(page, this.sel.chat.open, { timeout: 2500 }))) {
-      await sleep(800);
-      return this.chatReady(page);
+      // Return as soon as the input shows up (a fixed sleep is slow, and a panel that closes again is then missed).
+      return !!(await pollUntil(() => this.chatReady(page), { timeout: 1500, interval: 100 }));
     }
     return false;
   }
