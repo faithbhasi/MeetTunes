@@ -108,12 +108,13 @@ test('SSRF: private / metadata / file URLs are refused for playback, joining and
     assert.equal(q.status, 400, 'queue ' + u);
     const j = await req('/api/join', { method: 'POST', body: { url: u } });
     assert.equal(j.status, 400, 'join ' + u);
-    assert.notEqual((await req('/api/queue/add-track', { method: 'POST', body: { track: { source: u, title: 'x' } } })).status, 200 && 0, 'add-track');
+    const a = await req('/api/queue/add-track', { method: 'POST', body: { track: { source: u, title: 'x' } } });
+    assert.equal(a.status, 400, 'add-track ' + u);
   }
-  // add-track only queues; the guard fires when resolving the stream
+  // Defence in depth: even a track that got into the queue some other way fails closed when its stream is resolved.
   const { bot } = srv;
   bot.player.clear();
-  await req('/api/queue/add-track', { method: 'POST', body: { track: { source: 'http://169.254.169.254/x', title: 'evil' } } });
+  bot.player.add([{ id: 'evil', kind: 'url', title: 'evil', artist: '', duration: null, source: 'http://169.254.169.254/x' }]);
   await new Promise((r) => setTimeout(r, 400));
   assert.equal(bot.player.status, 'idle', 'stream resolution for a private URL fails closed');
   assert.match(bot.player.lastError || '', /private address/);

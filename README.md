@@ -103,6 +103,16 @@ without a real call. For real audio on Linux, run `docker/pulse-setup.sh` first 
 
 `docs/TEST-REPORT.md` lists every function exercised (including the GUI, control by control), the bugs found and fixed, and what is still unverified (real meeting products, real YouTube, Docker build).
 
+## Versions
+
+Every release is tagged in git and described in [CHANGELOG.md](CHANGELOG.md). To look at or run an older version:
+
+```bash
+git tag                      # list versions
+git checkout v0.1.0          # view / run that version (git switch main to come back)
+git diff v0.1.0 v0.2.0       # what changed between two versions
+```
+
 ## Security
 
 Set `UI_PASSWORD`, keep the port on localhost or behind a TLS reverse proxy, and read

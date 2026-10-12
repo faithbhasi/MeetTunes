@@ -128,3 +128,16 @@ test('remove / move / clear keep the cursor on the current track', { skip: !hasF
   assert.throws(() => player.remove(5), /No such queue position/);
   stop();
 });
+
+test('fractional / non-integer queue positions are rejected, not silently truncated', { skip: !hasFfmpeg }, () => {
+  const { player, stop } = setup();
+  player.add([mk('a', 20), mk('b', 20)]);
+  for (const bad of [1.5, NaN, Infinity, '1', null]) {
+    assert.throws(() => player.remove(bad), /No such queue position/, String(bad));
+    assert.throws(() => player.move(bad, 0), /No such queue position/, String(bad));
+  }
+  assert.equal(player.queue.length, 2);
+  assert.doesNotThrow(() => player.play(1.5)); // internal callers fall back to the first track instead of crashing
+  assert.equal(player.index, 0);
+  stop();
+});

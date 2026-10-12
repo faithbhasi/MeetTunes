@@ -150,7 +150,12 @@ export async function createServer({ bot, port = config.port, host = config.host
   api.get('/debug/dom', wrap(() => bot.session.diagnostics()));
 
   // player transport
-  api.post('/player/play', wrap((req) => (req.body.index !== undefined ? P.play(num(req.body.index, 'index')) : P.resume())));
+  api.post('/player/play', wrap((req) => {
+    if (req.body.index === undefined) return P.resume();
+    const i = num(req.body.index, 'index');
+    if (!Number.isInteger(i) || i < 0 || i >= P.queue.length) throw new Error('No such queue position'); // never silently play something else
+    return P.play(i);
+  }));
   api.post('/player/pause', wrap(() => P.pause()));
   api.post('/player/resume', wrap(() => P.resume()));
   api.post('/player/toggle', wrap(() => P.togglePause()));
@@ -175,10 +180,11 @@ export async function createServer({ bot, port = config.port, host = config.host
     if (/^Error:/.test(msg)) throw new Error(msg.replace(/^Error:\s*/, ''));
     return { message: msg };
   }));
-  api.post('/queue/add-track', wrap((req) => {
+  api.post('/queue/add-track', wrap(async (req) => {
     const t = req.body.track || {};
     if (typeof t.source !== 'string') throw new Error('Invalid track');
-    const track = { id: crypto.randomUUID(), kind: 'url', title: String(t.title || t.source).slice(0, 200), artist: String(t.artist || '').slice(0, 100), duration: Number.isFinite(t.duration) ? t.duration : null, thumbnail: typeof t.thumbnail === 'string' && /^https:\/\//.test(t.thumbnail) ? t.thumbnail : null, source: t.source };
+    await assertSafeUrl(t.source); // refuse unsafe links now rather than when the track comes up
+    const track = { id: crypto.randomUUID(), kind: 'url', title: String(t.title || t.source).slice(0, 200), artist: String(t.artist || '').slice(0, 100), duration: Number.isFinite(t.duration) && t.duration > 0 && t.duration < 86400 ? t.duration : null, thumbnail: typeof t.thumbnail === 'string' && /^https:\/\//.test(t.thumbnail) ? t.thumbnail : null, source: t.source };
     P.add([track], { playNow: !!req.body.now, requestedBy: 'Web UI' });
   }));
   api.get('/search', wrap(async (req) => ({ results: await bot.resolver.search(String(req.query.q || ''), 8) })));
